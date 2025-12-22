@@ -18,8 +18,10 @@ Web service for managing YouTube video assets in Google Ads App Campaigns (UAC).
 
 ## Setup
 
-1. Install dependencies:
+1. Create virtual environment and install dependencies (Python 3.12 is required):
 ```bash
+python3.12 -m venv venv
+source venv/bin/activate
 pip install -r requirements.txt
 ```
 
@@ -42,7 +44,7 @@ python -m uvicorn app:app --host 0.0.0.0 --port 8000
 
 ## Requirements
 
-- Python 3.10+
+- Python 3.12 (Highly recommended for gRPC stability)
 - Google Ads API access (Basic or Standard)
 - MCC account with linked sub-accounts
 

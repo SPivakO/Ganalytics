@@ -6,10 +6,7 @@ from typing import List, Optional
 from google.ads.googleads.client import GoogleAdsClient
 from google.ads.googleads.errors import GoogleAdsException
 import pandas as pd
-from datetime import datetime
-import io
 import re
-from google.protobuf import field_mask_pb2
 
 app = FastAPI(title="Google Ads YouTube Assets Report")
 
