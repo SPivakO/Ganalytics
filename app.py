@@ -1,0 +1,617 @@
+from fastapi import FastAPI, HTTPException
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
+from pydantic import BaseModel
+from typing import List, Optional
+from google.ads.googleads.client import GoogleAdsClient
+from google.ads.googleads.errors import GoogleAdsException
+import pandas as pd
+from datetime import datetime
+import io
+import re
+from google.protobuf import field_mask_pb2
+
+app = FastAPI(title="Google Ads YouTube Assets Report")
+
+# Mount static files
+app.mount("/static", StaticFiles(directory="static"), name="static")
+
+# Global client
+_client = None
+
+def get_client():
+    global _client
+    if _client is None:
+        _client = GoogleAdsClient.load_from_storage("google-ads.yaml")
+    return _client
+
+
+def normalize_asset_name(name: str) -> str:
+    """Remove format suffixes like 9x16, 1x1, 16x9 from asset name"""
+    # Remove common format patterns
+    # Matches: 9x16, 16x9, 1x1, 4x5, 9:16, 16:9, etc.
+    normalized = re.sub(r'\s*[\-_]?\s*\d+[x:]\d+\s*$', '', name, flags=re.IGNORECASE)
+    # Also remove if it's in the middle with separators
+    normalized = re.sub(r'\s+\d+[x:]\d+\s+', ' ', normalized)
+    # Remove trailing spaces and common separators
+    normalized = normalized.strip(' -_')
+    return normalized
+
+
+class ReportRequest(BaseModel):
+    account_ids: List[str]
+    campaign_ids: List[str]
+    adgroup_type: str  # "main" or "test"
+    test_date: Optional[str] = None  # e.g. "181225"
+    start_date: str
+    end_date: str
+    group_by_account: bool = False
+    group_by_campaign: bool = True
+
+
+@app.get("/")
+async def root():
+    return FileResponse("static/index.html")
+
+
+@app.get("/api/accounts")
+async def get_accounts():
+    """Get all available accounts"""
+    client = get_client()
+    login_customer_id = client.login_customer_id.replace('-', '') if client.login_customer_id else None
+    
+    if not login_customer_id:
+        raise HTTPException(status_code=500, detail="No login_customer_id configured")
+    
+    ga_service = client.get_service("GoogleAdsService")
+    query = """
+        SELECT
+            customer_client.id,
+            customer_client.descriptive_name
+        FROM customer_client
+        WHERE customer_client.status = 'ENABLED'
+          AND customer_client.manager = FALSE
+    """
+    
+    try:
+        response = ga_service.search(customer_id=login_customer_id, query=query)
+        accounts = []
+        for row in response:
+            accounts.append({
+                'id': str(row.customer_client.id),
+                'name': row.customer_client.descriptive_name
+            })
+        return {"accounts": sorted(accounts, key=lambda x: x['name'])}
+    except GoogleAdsException as ex:
+        raise HTTPException(status_code=500, detail=str(ex.failure.errors[0].message))
+
+
+@app.get("/api/campaigns")
+async def get_campaigns(account_ids: str, start_date: str, end_date: str):
+    """Get campaigns for selected accounts that have spend in the date range"""
+    client = get_client()
+    ga_service = client.get_service("GoogleAdsService")
+    
+    account_list = account_ids.split(',')
+    all_campaigns = []
+    
+    # Query campaigns with spend in the date range
+    query = f"""
+        SELECT
+            campaign.id,
+            campaign.name,
+            metrics.cost_micros
+        FROM campaign
+        WHERE campaign.status != 'REMOVED'
+          AND segments.date BETWEEN '{start_date}' AND '{end_date}'
+          AND metrics.cost_micros > 0
+    """
+    
+    for account_id in account_list:
+        try:
+            response = ga_service.search(customer_id=account_id.strip(), query=query)
+            seen_campaigns = set()
+            for row in response:
+                campaign_key = f"{account_id}_{row.campaign.id}"
+                if campaign_key not in seen_campaigns:
+                    seen_campaigns.add(campaign_key)
+                    all_campaigns.append({
+                        'id': campaign_key,
+                        'campaign_id': str(row.campaign.id),
+                        'account_id': account_id,
+                        'name': row.campaign.name
+                    })
+        except:
+            continue
+    
+    # Remove duplicates by name and sort
+    unique_campaigns = {}
+    for c in all_campaigns:
+        if c['name'] not in unique_campaigns:
+            unique_campaigns[c['name']] = c
+    
+    return {"campaigns": sorted(list(unique_campaigns.values()), key=lambda x: x['name'])}
+
+
+@app.post("/api/report")
+async def generate_report(request: ReportRequest):
+    """Generate report with filters"""
+    client = get_client()
+    ga_service = client.get_service("GoogleAdsService")
+    
+    # Fetch account names first
+    accounts_resp = await get_accounts()
+    state_accounts = accounts_resp.get('accounts', [])
+    
+    # Build adgroup filter
+    if request.adgroup_type == "main":
+        adgroup_filter = "Main"
+    else:
+        adgroup_filter = request.test_date or ""
+    
+    # Build campaign names filter from campaign_ids
+    campaign_names = []
+    for cid in request.campaign_ids:
+        parts = cid.split('_', 1)
+        if len(parts) > 1:
+            # Extract campaign name from the ID (we stored account_campaignId)
+            pass
+    
+    all_results = []
+    
+    for account_id in request.account_ids:
+        # Get campaign names for this account from selected campaign_ids
+        account_campaigns = [c.split('_', 1)[1] if '_' in c else c 
+                           for c in request.campaign_ids 
+                           if c.startswith(account_id)]
+        
+        if not account_campaigns and request.campaign_ids:
+            # Check if any campaign_ids match this account
+            continue
+        
+        query = f"""
+            SELECT
+                asset.id,
+                asset.name,
+                asset.youtube_video_asset.youtube_video_id,
+                asset.youtube_video_asset.youtube_video_title,
+                campaign.id,
+                campaign.name,
+                ad_group.name,
+                metrics.cost_micros,
+                metrics.impressions,
+                metrics.conversions
+            FROM ad_group_ad_asset_view
+            WHERE 
+                asset.type = 'YOUTUBE_VIDEO'
+                AND segments.date BETWEEN '{request.start_date}' AND '{request.end_date}'
+                AND metrics.impressions > 0
+                AND ad_group.name LIKE '%{adgroup_filter}%'
+        """
+        
+        try:
+            response = ga_service.search(customer_id=account_id, query=query)
+            
+            for row in response:
+                # Filter by campaign if specified
+                if request.campaign_ids:
+                    campaign_key = f"{account_id}_{row.campaign.id}"
+                    if campaign_key not in request.campaign_ids:
+                        continue
+                
+                # Get asset name
+                asset_name = row.asset.name
+                if not asset_name and hasattr(row.asset, 'youtube_video_asset'):
+                    yt_asset = row.asset.youtube_video_asset
+                    if hasattr(yt_asset, 'youtube_video_title') and yt_asset.youtube_video_title:
+                        asset_name = yt_asset.youtube_video_title
+                if not asset_name:
+                    asset_name = f"Asset_{row.asset.id}"
+                
+                # Normalize asset name (remove format suffixes)
+                normalized_name = normalize_asset_name(asset_name)
+                
+                # Get account name from state.accounts
+                account_name = account_id
+                for acc in state_accounts:
+                    if acc['id'] == account_id:
+                        account_name = acc['name']
+                        break
+                
+                all_results.append({
+                    'asset_name': normalized_name,
+                    'asset_name_original': asset_name,
+                    'account': account_name,
+                    'account_id': account_id,
+                    'campaign': row.campaign.name,
+                    'ad_group': row.ad_group.name,
+                    'cost': row.metrics.cost_micros / 1_000_000 if row.metrics.cost_micros else 0,
+                    'impressions': row.metrics.impressions or 0,
+                    'installs': row.metrics.conversions or 0
+                })
+        except GoogleAdsException as ex:
+            continue
+    
+    if not all_results:
+        return {
+            "data": [],
+            "totals": {"cost": 0, "impressions": 0, "installs": 0},
+            "count": 0
+        }
+    
+    # Aggregate by Asset Name (and optionally Account/Campaign)
+    df = pd.DataFrame(all_results)
+    
+    group_cols = ['asset_name']
+    if request.group_by_account:
+        group_cols.append('account')
+    if request.group_by_campaign:
+        group_cols.append('campaign')
+    
+    result = df.groupby(group_cols).agg({
+        'cost': 'sum',
+        'impressions': 'sum',
+        'installs': 'sum'
+    }).reset_index()
+    
+    # Add missing columns with defaults
+    if not request.group_by_account:
+        result['account'] = ''
+    if not request.group_by_campaign:
+        result['campaign'] = ''
+    
+    # Sort by cost descending
+    result = result.sort_values('cost', ascending=False)
+    
+    # Round values
+    result['cost'] = result['cost'].round(2)
+    result['installs'] = result['installs'].round(0).astype(int)
+    result['impressions'] = result['impressions'].astype(int)
+    
+    # Calculate totals
+    totals = {
+        "cost": round(result['cost'].sum(), 2),
+        "impressions": int(result['impressions'].sum()),
+        "installs": int(result['installs'].sum())
+    }
+    
+    return {
+        "data": result.to_dict('records'),
+        "totals": totals,
+        "count": len(result)
+    }
+
+
+# ==================== UPLOAD SECTION ====================
+
+class UploadRequest(BaseModel):
+    campaign_ids: List[str]  # Format: "accountId_campaignId"
+    adgroup_name: str  # e.g. "211225"
+    youtube_urls: List[str]  # YouTube video URLs
+    headlines: List[str]  # Headlines from UI
+    descriptions: List[str]  # Descriptions from UI
+
+def parse_youtube_url(url: str) -> Optional[str]:
+    """Extract video ID from various YouTube URL formats"""
+    url = url.strip()
+    
+    # Already just an ID
+    if re.match(r'^[a-zA-Z0-9_-]{11}$', url):
+        return url
+    
+    # youtu.be/VIDEO_ID
+    match = re.search(r'youtu\.be/([a-zA-Z0-9_-]{11})', url)
+    if match:
+        return match.group(1)
+    
+    # youtube.com/watch?v=VIDEO_ID
+    match = re.search(r'[?&]v=([a-zA-Z0-9_-]{11})', url)
+    if match:
+        return match.group(1)
+    
+    # youtube.com/embed/VIDEO_ID
+    match = re.search(r'/embed/([a-zA-Z0-9_-]{11})', url)
+    if match:
+        return match.group(1)
+    
+    # youtube.com/v/VIDEO_ID
+    match = re.search(r'/v/([a-zA-Z0-9_-]{11})', url)
+    if match:
+        return match.group(1)
+    
+    # youtube.com/shorts/VIDEO_ID
+    match = re.search(r'/shorts/([a-zA-Z0-9_-]{11})', url)
+    if match:
+        return match.group(1)
+    
+    return None
+
+
+
+
+
+@app.get("/api/all-campaigns")
+async def get_all_campaigns(account_ids: str):
+    """Get ALL campaigns for selected accounts (for upload section)"""
+    client = get_client()
+    ga_service = client.get_service("GoogleAdsService")
+    
+    account_list = account_ids.split(',')
+    all_campaigns = []
+    
+    query = """
+        SELECT
+            campaign.id,
+            campaign.name,
+            campaign.status
+        FROM campaign
+        WHERE campaign.status = 'ENABLED'
+    """
+    
+    for account_id in account_list:
+        try:
+            response = ga_service.search(customer_id=account_id.strip(), query=query)
+            for row in response:
+                campaign_key = f"{account_id}_{row.campaign.id}"
+                all_campaigns.append({
+                    'id': campaign_key,
+                    'campaign_id': str(row.campaign.id),
+                    'account_id': account_id,
+                    'name': row.campaign.name
+                })
+        except:
+            continue
+    
+    return {"campaigns": sorted(all_campaigns, key=lambda x: x['name'])}
+
+
+
+@app.post("/api/upload")
+async def create_test_adgroup(request: UploadRequest):
+    """Create test ad groups with YouTube videos in selected campaigns"""
+    client = get_client()
+    
+    # Parse YouTube URLs
+    video_ids = []
+    for url in request.youtube_urls:
+        vid = parse_youtube_url(url)
+        if vid:
+            video_ids.append(vid)
+    
+    if not video_ids:
+        raise HTTPException(status_code=400, detail="No valid YouTube video IDs found")
+    
+    # Use headlines/descriptions from request, truncate to max lengths
+    headlines = [h.strip()[:30] for h in request.headlines if h.strip()][:5]
+    descriptions = [d.strip()[:90] for d in request.descriptions if d.strip()][:5]
+    
+    if not headlines:
+        raise HTTPException(status_code=400, detail="At least one headline is required")
+    if not descriptions:
+        raise HTTPException(status_code=400, detail="At least one description is required")
+    
+    results = []
+    
+    # Group campaigns by account
+    campaigns_by_account = {}
+    for cid in request.campaign_ids:
+        parts = cid.split('_', 1)
+        if len(parts) == 2:
+            account_id, campaign_id = parts
+            if account_id not in campaigns_by_account:
+                campaigns_by_account[account_id] = []
+            campaigns_by_account[account_id].append(campaign_id)
+    
+    for account_id, campaign_ids in campaigns_by_account.items():
+        for campaign_id in campaign_ids:
+            try:
+                result = create_adgroup_with_videos(
+                    client=client,
+                    customer_id=account_id,
+                    campaign_id=campaign_id,
+                    adgroup_name=request.adgroup_name,
+                    video_ids=video_ids,
+                    headlines=headlines,
+                    descriptions=descriptions
+                )
+                results.append(result)
+            except Exception as e:
+                results.append({
+                    "account_id": account_id,
+                    "campaign_id": campaign_id,
+                    "success": False,
+                    "error": str(e)
+                })
+    
+    return {"results": results}
+
+
+def create_adgroup_with_videos(client, customer_id, campaign_id, adgroup_name, video_ids, headlines, descriptions):
+    """Create ad group with YouTube video assets for App Campaign"""
+    
+    logs = []
+    logs.append(f"Starting creation for account {customer_id}, campaign {campaign_id}")
+    
+    # Services
+    ad_group_service = client.get_service("AdGroupService")
+    asset_service = client.get_service("AssetService")
+    ad_group_ad_service = client.get_service("AdGroupAdService")
+    
+    # 1. Create Ad Group (PAUSED)
+    ad_group_operation = client.get_type("AdGroupOperation")
+    ad_group = ad_group_operation.create
+    ad_group.name = adgroup_name
+    ad_group.campaign = f"customers/{customer_id}/campaigns/{campaign_id}"
+    ad_group.status = client.enums.AdGroupStatusEnum.PAUSED
+    
+    logs.append(f"Creating ad group '{adgroup_name}'...")
+    
+    ad_group_resource = None
+    try:
+        ad_group_response = ad_group_service.mutate_ad_groups(
+            customer_id=customer_id,
+            operations=[ad_group_operation]
+        )
+        ad_group_resource = ad_group_response.results[0].resource_name
+        logs.append(f"Ad group created: {ad_group_resource}")
+    except GoogleAdsException as ex:
+        error_details = []
+        for error in ex.failure.errors:
+            error_details.append(f"{error.error_code}: {error.message}")
+        error_msg = "; ".join(error_details)
+        logs.append(f"Failed to create ad group: {error_msg}")
+        return {
+            "account_id": customer_id,
+            "campaign_id": campaign_id,
+            "success": False,
+            "error": f"Failed to create ad group: {error_msg}",
+            "logs": logs
+        }
+    
+    # 2. Create YouTube Video Assets
+    logs.append(f"Creating {len(video_ids)} video assets...")
+    created_video_assets = []
+    
+    for video_id in video_ids:
+        asset_operation = client.get_type("AssetOperation")
+        asset = asset_operation.create
+        asset.youtube_video_asset.youtube_video_id = video_id
+        asset.name = f"Video_{video_id}"
+        
+        try:
+            asset_response = asset_service.mutate_assets(
+                customer_id=customer_id,
+                operations=[asset_operation]
+            )
+            created_video_assets.append(asset_response.results[0].resource_name)
+            logs.append(f"Created video asset: {video_id}")
+        except GoogleAdsException as ex:
+            # Asset might already exist, try to find it
+            logs.append(f"Video {video_id}: {ex.failure.errors[0].message}")
+            # Try to get existing asset
+            try:
+                ga_service = client.get_service("GoogleAdsService")
+                query = f"""
+                    SELECT asset.resource_name 
+                    FROM asset 
+                    WHERE asset.youtube_video_asset.youtube_video_id = '{video_id}'
+                """
+                response = ga_service.search(customer_id=customer_id, query=query)
+                for row in response:
+                    created_video_assets.append(row.asset.resource_name)
+                    logs.append(f"Found existing asset for {video_id}")
+                    break
+            except:
+                logs.append(f"Could not find existing asset for {video_id}")
+    
+    logs.append(f"Total video assets: {len(created_video_assets)}")
+    
+    # 3. Create Text Assets (Headlines and Descriptions)
+    logs.append(f"Creating text assets...")
+    headline_assets = []
+    description_assets = []
+    
+    for headline in headlines:
+        asset_operation = client.get_type("AssetOperation")
+        asset = asset_operation.create
+        asset.text_asset.text = headline
+        asset.name = f"Headline_{headline[:20]}"
+        
+        try:
+            asset_response = asset_service.mutate_assets(
+                customer_id=customer_id,
+                operations=[asset_operation]
+            )
+            headline_assets.append(asset_response.results[0].resource_name)
+        except GoogleAdsException as ex:
+            logs.append(f"Headline '{headline[:20]}...': {ex.failure.errors[0].message}")
+    
+    for description in descriptions:
+        asset_operation = client.get_type("AssetOperation")
+        asset = asset_operation.create
+        asset.text_asset.text = description
+        asset.name = f"Desc_{description[:20]}"
+        
+        try:
+            asset_response = asset_service.mutate_assets(
+                customer_id=customer_id,
+                operations=[asset_operation]
+            )
+            description_assets.append(asset_response.results[0].resource_name)
+        except GoogleAdsException as ex:
+            logs.append(f"Description '{description[:20]}...': {ex.failure.errors[0].message}")
+    
+    logs.append(f"Created {len(headline_assets)} headlines, {len(description_assets)} descriptions")
+    
+    # 4. Create App Ad with text and videos
+    logs.append("Creating App Ad...")
+    
+    ad_group_ad_operation = client.get_type("AdGroupAdOperation")
+    ad_group_ad = ad_group_ad_operation.create
+    ad_group_ad.ad_group = ad_group_resource
+    # For App ads, ad cannot be created in PAUSED state. Use ENABLED.
+    ad_group_ad.status = client.enums.AdGroupAdStatusEnum.ENABLED
+    
+    # Set up App Ad
+    ad = ad_group_ad.ad
+    app_ad = ad.app_ad
+    
+    # Add headlines (direct text, not asset references)
+    for headline_text in headlines[:5]:
+        headline_info = client.get_type("AdTextAsset")
+        headline_info.text = headline_text
+        app_ad.headlines.append(headline_info)
+    
+    # Add descriptions (direct text)
+    for desc_text in descriptions[:5]:
+        desc_info = client.get_type("AdTextAsset")
+        desc_info.text = desc_text
+        app_ad.descriptions.append(desc_info)
+    
+    # Add videos (using video IDs directly)
+    for vid in video_ids:
+        video_info = client.get_type("AdVideoAsset")
+        video_info.asset = f"customers/{customer_id}/assets/{vid}"  # Try with video_id
+        app_ad.youtube_videos.append(video_info)
+    
+    # Alternative: Add videos using created asset resources
+    if created_video_assets:
+        app_ad.youtube_videos.clear()  # Clear previous attempt
+        for v_asset in created_video_assets:
+            video_info = client.get_type("AdVideoAsset")
+            video_info.asset = v_asset
+            app_ad.youtube_videos.append(video_info)
+    
+    try:
+        ad_response = ad_group_ad_service.mutate_ad_group_ads(
+            customer_id=customer_id,
+            operations=[ad_group_ad_operation]
+        )
+        logs.append(f"Created App Ad: {ad_response.results[0].resource_name}")
+    except GoogleAdsException as ex:
+        error_details = []
+        for error in ex.failure.errors:
+            error_details.append(f"{error.message}")
+            if hasattr(error, 'details') and error.details:
+                error_details.append(f"  Details: {error.details}")
+        error_msg = "; ".join(error_details)
+        logs.append(f"App Ad error: {error_msg}")
+    
+    logs.append("Completed!")
+    
+    return {
+        "account_id": customer_id,
+        "campaign_id": campaign_id,
+        "adgroup_name": adgroup_name,
+        "adgroup_resource": ad_group_resource,
+        "videos_count": len(video_ids),
+        "assets_created": len(created_video_assets),
+        "success": True,
+        "logs": logs
+    }
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
+

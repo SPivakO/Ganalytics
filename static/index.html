@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Google Ads Manager</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>📊 Google Ads Manager</h1>
+            <p class="subtitle">YouTube Assets Analytics & Upload</p>
+        </header>
+
+        <!-- Navigation Tabs -->
+        <nav class="tabs">
+            <button class="tab-btn active" data-tab="reports">
+                <span class="tab-icon">📈</span>
+                Reports
+            </button>
+            <button class="tab-btn" data-tab="upload">
+                <span class="tab-icon">🎬</span>
+                Upload Test
+            </button>
+        </nav>
+
+        <!-- REPORTS TAB -->
+        <div id="reports-tab" class="tab-content active">
+            <div class="filters-panel">
+                <div class="filter-row">
+                    <div class="filter-group">
+                        <label>Accounts</label>
+                        <div class="multi-select" id="accounts-container">
+                            <div class="loading">Loading accounts...</div>
+                        </div>
+                    </div>
+
+                    <div class="filter-group">
+                        <label>Campaigns</label>
+                        <div class="multi-select" id="campaigns-container">
+                            <div class="placeholder">Select accounts first</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="filter-row">
+                    <div class="filter-group adgroup-type">
+                        <label>Ad Group Type</label>
+                        <div class="radio-group">
+                            <label class="radio-label">
+                                <input type="radio" name="adgroup_type" value="main" checked>
+                                <span class="radio-custom"></span>
+                                Main (Production)
+                            </label>
+                            <label class="radio-label">
+                                <input type="radio" name="adgroup_type" value="test">
+                                <span class="radio-custom"></span>
+                                Test
+                                <input type="text" id="test-date" class="test-date-input" placeholder="e.g. 181225" disabled>
+                            </label>
+                        </div>
+                    </div>
+
+                    <div class="filter-group dates">
+                        <label>Date Range</label>
+                        <div class="date-inputs">
+                            <input type="date" id="start-date" value="">
+                            <span class="date-separator">—</span>
+                            <input type="date" id="end-date" value="">
+                        </div>
+                    </div>
+
+                    <div class="filter-group options">
+                        <label>Options</label>
+                        <label class="checkbox-option">
+                            <input type="checkbox" id="group-by-account">
+                            <span>Split by Account</span>
+                        </label>
+                        <label class="checkbox-option">
+                            <input type="checkbox" id="group-by-campaign" checked>
+                            <span>Split by Campaign</span>
+                        </label>
+                    </div>
+
+                    <div class="filter-group actions">
+                        <button id="load-btn" class="btn-primary">
+                            <span class="btn-icon">🔍</span>
+                            Load Report
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <div id="results-panel" class="results-panel hidden">
+                <div class="results-header">
+                    <div class="results-info">
+                        <span id="results-count">0 creatives</span>
+                    </div>
+                    <div class="totals">
+                        <div class="total-item">
+                            <span class="total-label">Cost</span>
+                            <span class="total-value" id="total-cost">$0</span>
+                        </div>
+                        <div class="total-item">
+                            <span class="total-label">Impressions</span>
+                            <span class="total-value" id="total-impressions">0</span>
+                        </div>
+                        <div class="total-item">
+                            <span class="total-label">Installs</span>
+                            <span class="total-value" id="total-installs">0</span>
+                        </div>
+                    </div>
+                    <button id="download-btn" class="btn-secondary">
+                        <span class="btn-icon">📥</span>
+                        Download CSV
+                    </button>
+                </div>
+
+                <div class="table-container">
+                    <table id="results-table">
+                        <thead id="results-thead">
+                            <tr>
+                                <th class="sortable" data-sort="asset_name">Asset Name</th>
+                                <th class="sortable" data-sort="account">Account</th>
+                                <th class="sortable" data-sort="campaign">Campaign</th>
+                                <th class="sortable numeric" data-sort="cost">Cost</th>
+                                <th class="sortable numeric" data-sort="impressions">Impressions</th>
+                                <th class="sortable numeric" data-sort="installs">Installs</th>
+                            </tr>
+                        </thead>
+                        <tbody id="results-body">
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- UPLOAD TAB -->
+        <div id="upload-tab" class="tab-content">
+            <div class="filters-panel">
+                <div class="filter-row">
+                    <div class="filter-group">
+                        <label>Accounts</label>
+                        <div class="multi-select" id="upload-accounts-container">
+                            <div class="loading">Loading accounts...</div>
+                        </div>
+                    </div>
+
+                    <div class="filter-group">
+                        <label>Campaigns (will create ad group in each)</label>
+                        <div class="multi-select" id="upload-campaigns-container">
+                            <div class="placeholder">Select accounts first</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="filter-row">
+                    <div class="filter-group">
+                        <label>Ad Group Name (e.g. test date: 211225)</label>
+                        <input type="text" id="adgroup-name" class="text-input" placeholder="211225">
+                    </div>
+                </div>
+
+                <div class="filter-row">
+                    <div class="filter-group full-width">
+                        <label>YouTube Video URLs (one per line)</label>
+                        <textarea id="youtube-urls" class="textarea" placeholder="https://www.youtube.com/watch?v=VIDEO_ID
+https://youtu.be/ANOTHER_ID
+..."></textarea>
+                    </div>
+                </div>
+
+                <div class="filter-row">
+                    <div class="filter-group half-width">
+                        <label>Headlines (one per line, max 5, up to 30 chars)</label>
+                        <textarea id="headlines-input" class="textarea textarea-small">Unlock new Spider-man's Powers
+Experience Life as Spider-man
+Create Own Spider Skills
+Open world spider-man
+Spider-man needs You</textarea>
+                    </div>
+                    <div class="filter-group half-width">
+                        <label>Descriptions (one per line, max 5, up to 90 chars)</label>
+                        <textarea id="descriptions-input" class="textarea textarea-small">Shoot spider web, swing, perform epic attacks and defeat all crime villains in New York
+Shoot web, hook, swing, throw enemies and fight in the air like real Spider-man</textarea>
+                    </div>
+                </div>
+
+                <div class="filter-row">
+                    <div class="filter-group actions">
+                        <button id="upload-btn" class="btn-primary btn-large">
+                            <span class="btn-icon">🚀</span>
+                            Create Test Ad Groups
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <div id="upload-results" class="upload-results hidden">
+                <h3>Results</h3>
+                <div id="upload-log"></div>
+            </div>
+        </div>
+
+
+        <div id="loading-overlay" class="loading-overlay hidden">
+            <div class="spinner"></div>
+            <p>Loading data from Google Ads...</p>
+        </div>
+
+        <div id="error-message" class="error-message hidden"></div>
+    </div>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>
