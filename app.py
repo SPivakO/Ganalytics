@@ -1,14 +1,42 @@
-from fastapi import FastAPI, HTTPException
+import os
+from dotenv import load_dotenv
+from fastapi import FastAPI, HTTPException, Request, Depends
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, RedirectResponse
+from starlette.middleware.sessions import SessionMiddleware
+from authlib.integrations.starlette_client import OAuth
 from pydantic import BaseModel
-from typing import List, Optional
+from typing import List, Optional, Any
 from google.ads.googleads.client import GoogleAdsClient
 from google.ads.googleads.errors import GoogleAdsException
 import pandas as pd
 import re
 
+load_dotenv()
+
 app = FastAPI(title="Google Ads YouTube Assets Report")
+
+# Добавляем middleware для сессий (хранение в Cookie)
+app.add_middleware(
+    SessionMiddleware, 
+    secret_key=os.getenv("SECRET_KEY", "replace-with-secure-key")
+)
+
+# Настройка OAuth
+oauth = OAuth()
+oauth.register(
+    name='google',
+    client_id=os.getenv("GOOGLE_CLIENT_ID"),
+    client_secret=os.getenv("GOOGLE_CLIENT_SECRET"),
+    server_metadata_url='https://accounts.google.com/.well-known/openid-configuration',
+    client_kwargs={'scope': 'openid email profile'}
+)
+
+def get_current_user(request: Request) -> Any:
+    user = request.session.get('user')
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    return user
 
 # Mount static files
 app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -47,12 +75,36 @@ class ReportRequest(BaseModel):
 
 
 @app.get("/")
-async def root():
+async def root(request: Request):
+    user = request.session.get('user')
+    if not user:
+        return RedirectResponse(url='/api/auth/login')
     return FileResponse("static/index.html")
 
 
+@app.get("/api/auth/login")
+async def login(request: Request):
+    redirect_uri = request.url_for('auth_callback')
+    return await oauth.google.authorize_redirect(request, str(redirect_uri))
+
+
+@app.get("/api/auth/callback/google")
+async def auth_callback(request: Request):
+    token = await oauth.google.authorize_access_token(request)
+    user = token.get('userinfo')
+    if user:
+        request.session['user'] = dict(user)
+    return RedirectResponse(url='/')
+
+
+@app.get("/api/auth/logout")
+async def logout(request: Request):
+    request.session.pop('user', None)
+    return RedirectResponse(url='/')
+
+
 @app.get("/api/accounts")
-async def get_accounts():
+async def get_accounts(user: dict[str, Any] = Depends(get_current_user)):
     """Get all available accounts"""
     client = get_client()
     login_customer_id = client.login_customer_id.replace('-', '') if client.login_customer_id else None
@@ -84,7 +136,7 @@ async def get_accounts():
 
 
 @app.get("/api/campaigns")
-async def get_campaigns(account_ids: str, start_date: str, end_date: str):
+async def get_campaigns(account_ids: str, start_date: str, end_date: str, user: dict[str, Any] = Depends(get_current_user)):
     """Get campaigns for selected accounts that have spend in the date range"""
     client = get_client()
     ga_service = client.get_service("GoogleAdsService")
@@ -131,13 +183,13 @@ async def get_campaigns(account_ids: str, start_date: str, end_date: str):
 
 
 @app.post("/api/report")
-async def generate_report(request: ReportRequest):
+async def generate_report(request: ReportRequest, user: dict[str, Any] = Depends(get_current_user)):
     """Generate report with filters"""
     client = get_client()
     ga_service = client.get_service("GoogleAdsService")
     
     # Fetch account names first
-    accounts_resp = await get_accounts()
+    accounts_resp = await get_accounts(user)
     state_accounts = accounts_resp.get('accounts', [])
     
     # Build adgroup filter
@@ -327,8 +379,8 @@ def parse_youtube_url(url: str) -> Optional[str]:
 
 
 
-@app.get("/api/all-campaigns")
-async def get_all_campaigns(account_ids: str):
+@app.get("/api/all_campaigns")
+async def get_all_campaigns(account_ids: str, user: dict[str, Any] = Depends(get_current_user)):
     """Get ALL campaigns for selected accounts (for upload section)"""
     client = get_client()
     ga_service = client.get_service("GoogleAdsService")
@@ -364,7 +416,7 @@ async def get_all_campaigns(account_ids: str):
 
 
 @app.post("/api/upload")
-async def create_test_adgroup(request: UploadRequest):
+async def create_test_adgroup(request: UploadRequest, user: dict[str, Any] = Depends(get_current_user)):
     """Create test ad groups with YouTube videos in selected campaigns"""
     client = get_client()
     

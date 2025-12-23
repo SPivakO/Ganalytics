@@ -1,5 +1,3 @@
-### DOCUMENTATION
-
 ### CORE RULES
 
 **MUST ALWAYS:**
@@ -20,8 +18,6 @@
 
 - Say so instead of guessing
 - Provide accurate, factual answers only
-
-### CODE STANDARDS
 
 ### WORKFLOW
 
