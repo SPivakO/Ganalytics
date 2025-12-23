@@ -1,19 +1,34 @@
 """
 Script to get refresh_token for Google Ads API
+Reads client_id and client_secret from google-ads.yaml
 """
 
+import yaml
 from google_auth_oauthlib.flow import InstalledAppFlow
-
-CLIENT_ID = "YOUR_CLIENT_ID"
-CLIENT_SECRET = "YOUR_CLIENT_SECRET"
 
 SCOPES = ["https://www.googleapis.com/auth/adwords"]
 
 def main():
+    # Load credentials from google-ads.yaml
+    try:
+        with open("google-ads.yaml", "r") as f:
+            config = yaml.safe_load(f)
+    except FileNotFoundError:
+        print("ERROR: google-ads.yaml not found!")
+        print("Create google-ads.yaml with client_id and client_secret")
+        return
+    
+    client_id = config.get("client_id")
+    client_secret = config.get("client_secret")
+    
+    if not client_id or not client_secret:
+        print("ERROR: client_id or client_secret not found in google-ads.yaml")
+        return
+    
     client_config = {
         "installed": {
-            "client_id": CLIENT_ID,
-            "client_secret": CLIENT_SECRET,
+            "client_id": client_id,
+            "client_secret": client_secret,
             "auth_uri": "https://accounts.google.com/o/oauth2/auth",
             "token_uri": "https://oauth2.googleapis.com/token",
         }

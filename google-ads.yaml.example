@@ -1,0 +1,10 @@
+# Copy this file to google-ads.yaml and fill in your credentials
+# google-ads.yaml is in .gitignore - it won't be committed
+
+developer_token: "YOUR_DEVELOPER_TOKEN"
+client_id: "YOUR_CLIENT_ID.apps.googleusercontent.com"
+client_secret: "YOUR_CLIENT_SECRET"
+refresh_token: "YOUR_REFRESH_TOKEN"
+login_customer_id: "123-456-7890"  # Your MCC account ID
+use_proto_plus: True
+

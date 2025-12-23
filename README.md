@@ -52,3 +52,4 @@ python -m uvicorn app:app --host 0.0.0.0 --port 8000
 - **Frontend**: Vanilla JavaScript, CSS
 - **Data**: Pandas for aggregation
 
+
