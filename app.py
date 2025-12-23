@@ -473,7 +473,7 @@ def create_adgroup_with_videos(client, customer_id, campaign_id, adgroup_name, v
         asset_operation = client.get_type("AssetOperation")
         asset = asset_operation.create
         asset.youtube_video_asset.youtube_video_id = video_id
-        asset.name = f"Video_{video_id}"
+        # Don't set asset.name - Google Ads will auto-fetch title from YouTube
         
         try:
             asset_response = asset_service.mutate_assets(
