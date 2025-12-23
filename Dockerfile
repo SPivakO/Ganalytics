@@ -18,10 +18,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Агрессивная очистка виртуального окружения
 RUN find /opt/venv -type d -name "__pycache__" -exec rm -rf {} + && \
     find /opt/venv -type d -name "tests" -exec rm -rf {} + && \
-    # Удаляем старые версии Google Ads API (оставляем только v18 и общие файлы)
+    # Удаляем старые версии Google Ads API (оставляем только v22 и общие файлы)
     # Это существенно уменьшает размер библиотеки google-ads
     find /opt/venv/lib/python3.12/site-packages/google/ads/googleads -mindepth 1 -maxdepth 1 -type d \
-    ! -name "v18" ! -name "common" ! -name "interceptors" ! -name "errors" -exec rm -rf {} +
+    ! -name "v22" ! -name "common" ! -name "interceptors" ! -name "errors" -exec rm -rf {} +
 
 # Stage 2: Runner
 FROM python:3.12-slim
