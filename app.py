@@ -94,8 +94,13 @@ async def root(request: Request):
 
 @app.get("/api/auth/login")
 async def login(request: Request):
-    redirect_uri = request.url_for('auth_callback')
-    return await oauth.google.authorize_redirect(request, str(redirect_uri))
+    # Try to get fixed Redirect URI from environment variables
+    redirect_uri = os.getenv("OAUTH_REDIRECT_URI")
+    if not redirect_uri:
+        # Fallback to automatic detection
+        redirect_uri = str(request.url_for('auth_callback'))
+        
+    return await oauth.google.authorize_redirect(request, redirect_uri)
 
 
 @app.get("/api/auth/callback/google")
