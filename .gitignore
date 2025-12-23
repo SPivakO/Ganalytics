@@ -14,9 +14,6 @@ env/
 *.swp
 *.swo
 
-# Google Ads credentials (sensitive!)
-google-ads.yaml
-
 # Temp files
 *.log
 *.csv

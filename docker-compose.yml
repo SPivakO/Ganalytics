@@ -1,0 +1,27 @@
+services:
+  app:
+    build: .
+    image: ganalytics:latest
+    container_name: ganalytics
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      - PORT=8000
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - ganalytics-network
+
+networks:
+  ganalytics-network:
+    driver: bridge

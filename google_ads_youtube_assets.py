@@ -1,18 +1,17 @@
+import os
+import csv
+from dotenv import load_dotenv
 from google.ads.googleads.client import GoogleAdsClient
 from google.ads.googleads.errors import GoogleAdsException
-import pandas as pd
-from datetime import datetime
 
-# ========== SETTINGS ==========
-START_DATE = "2025-11-01"
-END_DATE = "2025-11-30"
+load_dotenv()
 
-# Filters
-ACCOUNT_FILTER = "Spider Fighter Open World"  # Only accounts containing this
-CAMPAIGN_FILTER = "Android"                    # Only campaigns containing this
-ADGROUP_FILTER = "Main"                        # Only ad groups containing this
-# ==============================
-
+# Settings
+START_DATE = "2024-01-01"
+END_DATE = "2024-03-31"
+ACCOUNT_FILTER = ""  # Filter accounts by name
+CAMPAIGN_FILTER = ""  # Filter campaigns by name
+ADGROUP_FILTER = ""   # Filter ad groups by name
 
 def get_all_customers(client, login_customer_id):
     """Get list of all customer accounts"""
@@ -42,55 +41,43 @@ def get_all_customers(client, login_customer_id):
     except:
         return [{'id': login_customer_id, 'name': 'Current Account'}]
 
-
 def get_youtube_assets(client, customer_id, start_date, end_date):
-    """Get YouTube video assets data with metrics"""
+    """Get YouTube video assets and their performance metrics"""
     ga_service = client.get_service("GoogleAdsService")
     
-    # Query with campaign and ad_group filters
     query = f"""
         SELECT
             asset.id,
             asset.name,
             asset.youtube_video_asset.youtube_video_id,
-            asset.youtube_video_asset.youtube_video_title,
             campaign.name,
             ad_group.name,
             metrics.cost_micros,
             metrics.impressions,
             metrics.conversions
         FROM ad_group_ad_asset_view
-        WHERE 
-            asset.type = 'YOUTUBE_VIDEO'
-            AND segments.date BETWEEN '{start_date}' AND '{end_date}'
-            AND metrics.impressions > 0
-            AND campaign.name LIKE '%{CAMPAIGN_FILTER}%'
-            AND ad_group.name LIKE '%{ADGROUP_FILTER}%'
+        WHERE segments.date BETWEEN '{start_date}' AND '{end_date}'
+          AND asset.type = 'YOUTUBE_VIDEO'
+          AND metrics.impressions > 0
     """
     
+    if CAMPAIGN_FILTER:
+        query += f" AND campaign.name LIKE '%{CAMPAIGN_FILTER}%'"
+    if ADGROUP_FILTER:
+        query += f" AND ad_group.name LIKE '%{ADGROUP_FILTER}%'"
+
     try:
         response = ga_service.search(customer_id=customer_id, query=query)
-        
         results = []
         for row in response:
-            # Get asset name
-            asset_name = row.asset.name
-            if not asset_name and hasattr(row.asset, 'youtube_video_asset'):
-                yt_asset = row.asset.youtube_video_asset
-                if hasattr(yt_asset, 'youtube_video_title') and yt_asset.youtube_video_title:
-                    asset_name = yt_asset.youtube_video_title
-            if not asset_name:
-                asset_name = f"Asset_{row.asset.id}"
-            
             results.append({
-                'asset_name': asset_name,
+                'asset_id': row.asset.id,
+                'asset_name': row.asset.name or row.asset.youtube_video_asset.youtube_video_id,
                 'campaign': row.campaign.name,
-                'ad_group': row.ad_group.name,
-                'cost': row.metrics.cost_micros / 1_000_000 if row.metrics.cost_micros else 0,
-                'impressions': row.metrics.impressions or 0,
-                'installs': row.metrics.conversions or 0
+                'cost': row.metrics.cost_micros / 1000000.0,
+                'impressions': row.metrics.impressions,
+                'installs': row.metrics.conversions
             })
-        
         return results
     except GoogleAdsException as ex:
         print(f"   Error: {ex.failure.errors[0].message}")
@@ -98,8 +85,18 @@ def get_youtube_assets(client, customer_id, start_date, end_date):
 
 
 def main():
-    # Load client from config file
-    client = GoogleAdsClient.load_from_storage("google-ads.yaml")
+    # Load configuration exclusively from environment variables
+    config = {
+        "developer_token": os.getenv("ADS_DEVELOPER_TOKEN"),
+        "refresh_token": os.getenv("ADS_REFRESH_TOKEN"),
+        "client_id": os.getenv("ADS_CLIENT_ID"),
+        "client_secret": os.getenv("ADS_CLIENT_SECRET"),
+        "login_customer_id": os.getenv("ADS_LOGIN_CUSTOMER_ID"),
+        "use_proto_plus": os.getenv("ADS_USE_PROTO_PLUS", "True") == "True"
+    }
+    # Filter out None values
+    config = {k: v for k, v in config.items() if v is not None}
+    client = GoogleAdsClient.load_from_dict(config)
     login_customer_id = client.login_customer_id.replace('-', '') if client.login_customer_id else None
     
     print(f"Period: {START_DATE} - {END_DATE}")
@@ -126,38 +123,51 @@ def main():
         print("\nNo data found")
         return
     
-    # Aggregate by Asset Name and Campaign
-    df = pd.DataFrame(all_data)
-    result = df.groupby(['asset_name', 'campaign']).agg({
-        'cost': 'sum',
-        'impressions': 'sum',
-        'installs': 'sum'
-    }).reset_index()
+    # Aggregate by Asset Name and Campaign using dictionary
+    aggregated = {}
+    for item in all_data:
+        key = (item['asset_name'], item['campaign'])
+        if key not in aggregated:
+            aggregated[key] = {
+                'asset_name': item['asset_name'],
+                'campaign': item['campaign'],
+                'cost': 0.0,
+                'impressions': 0,
+                'installs': 0.0
+            }
+        aggregated[key]['cost'] += item['cost']
+        aggregated[key]['impressions'] += item['impressions']
+        aggregated[key]['installs'] += item['installs']
     
-    # Sort by cost (descending)
-    result = result.sort_values('cost', ascending=False)
+    # Convert to list and sort by cost descending
+    result_list = list(aggregated.values())
+    result_list.sort(key=lambda x: x['cost'], reverse=True)
     
-    # Round values
-    result['cost'] = result['cost'].round(2)
-    result['installs'] = result['installs'].round(0).astype(int)
+    # Round values and format for output
+    for item in result_list:
+        item['cost'] = round(item['cost'], 2)
+        item['installs'] = int(round(item['installs'], 0))
     
-    # Save to file
+    # Save to file using csv module
     filename = f"youtube_creatives_{START_DATE}_{END_DATE}.csv"
-    result.to_csv(filename, index=False, encoding='utf-8-sig')
+    with open(filename, mode='w', newline='', encoding='utf-8-sig') as f:
+        writer = csv.DictWriter(f, fieldnames=['asset_name', 'campaign', 'cost', 'impressions', 'installs'])
+        writer.writeheader()
+        writer.writerows(result_list)
     
     print(f"\n{'='*60}")
     print(f"Saved: {filename}")
-    print(f"Creatives: {len(result)}")
-    print(f"Total Cost: ${result['cost'].sum():,.2f}")
-    print(f"Total Impressions: {result['impressions'].sum():,.0f}")
-    print(f"Total Installs: {result['installs'].sum():,.0f}")
+    print(f"Creatives: {len(result_list)}")
+    print(f"Total Cost: ${sum(i['cost'] for i in result_list):,.2f}")
+    print(f"Total Impressions: {sum(i['impressions'] for i in result_list):,.0f}")
+    print(f"Total Installs: {sum(i['installs'] for i in result_list):,.0f}")
     print(f"{'='*60}\n")
     
     # Print top 20
     print("Top 20 by Cost:")
     print("-" * 80)
-    top20 = result.head(20)
-    for _, row in top20.iterrows():
+    top20 = result_list[:20]
+    for row in top20:
         name = row['asset_name'][:35] if len(row['asset_name']) > 35 else row['asset_name']
         camp = row['campaign'][:25] if len(row['campaign']) > 25 else row['campaign']
         print(f"${row['cost']:>9,.2f} | {row['impressions']:>10,.0f} | {row['installs']:>7,} | {camp:<25} | {name}")

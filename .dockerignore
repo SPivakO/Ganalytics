@@ -1,0 +1,18 @@
+# Exclude everything by default
+*
+
+# Include necessary files
+!app.py
+!google_ads_youtube_assets.py
+!requirements.txt
+!static
+!static/**/*
+
+# Exclude local environment and artifacts
+venv/
+.git/
+__pycache__/
+*.pyc
+.env
+google-ads.yaml
+service_snapshot.zip

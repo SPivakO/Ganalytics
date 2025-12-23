@@ -9,7 +9,6 @@ from pydantic import BaseModel
 from typing import List, Optional, Any
 from google.ads.googleads.client import GoogleAdsClient
 from google.ads.googleads.errors import GoogleAdsException
-import pandas as pd
 import re
 
 load_dotenv()
@@ -19,15 +18,15 @@ app = FastAPI(title="Google Ads YouTube Assets Report")
 # Добавляем middleware для сессий (хранение в Cookie)
 app.add_middleware(
     SessionMiddleware, 
-    secret_key=os.getenv("SECRET_KEY", "replace-with-secure-key")
+    secret_key=os.getenv("OAUTH_SECRET_KEY", "replace-with-secure-key")
 )
 
 # Настройка OAuth
 oauth = OAuth()
 oauth.register(
     name='google',
-    client_id=os.getenv("GOOGLE_CLIENT_ID"),
-    client_secret=os.getenv("GOOGLE_CLIENT_SECRET"),
+    client_id=os.getenv("OAUTH_GOOGLE_CLIENT_ID"),
+    client_secret=os.getenv("OAUTH_GOOGLE_CLIENT_SECRET"),
     server_metadata_url='https://accounts.google.com/.well-known/openid-configuration',
     client_kwargs={'scope': 'openid email profile'}
 )
@@ -47,7 +46,18 @@ _client = None
 def get_client():
     global _client
     if _client is None:
-        _client = GoogleAdsClient.load_from_storage("google-ads.yaml")
+        # Load configuration exclusively from environment variables
+        config = {
+            "developer_token": os.getenv("ADS_DEVELOPER_TOKEN"),
+            "refresh_token": os.getenv("ADS_REFRESH_TOKEN"),
+            "client_id": os.getenv("ADS_CLIENT_ID"),
+            "client_secret": os.getenv("ADS_CLIENT_SECRET"),
+            "login_customer_id": os.getenv("ADS_LOGIN_CUSTOMER_ID"),
+            "use_proto_plus": os.getenv("ADS_USE_PROTO_PLUS", "True") == "True"
+        }
+        # Filter out None values
+        config = {k: v for k, v in config.items() if v is not None}
+        _client = GoogleAdsClient.load_from_dict(config)
     return _client
 
 
@@ -289,45 +299,54 @@ async def generate_report(request: ReportRequest, user: dict[str, Any] = Depends
         }
     
     # Aggregate by Asset Name (and optionally Account/Campaign)
-    df = pd.DataFrame(all_results)
+    aggregated = {}
+    for item in all_results:
+        # Create a key based on grouping
+        key_parts = [item['asset_name']]
+        if request.group_by_account:
+            key_parts.append(item['account'])
+        if request.group_by_campaign:
+            key_parts.append(item['campaign'])
+        
+        key = tuple(key_parts)
+        
+        if key not in aggregated:
+            aggregated[key] = {
+                'asset_name': item['asset_name'],
+                'account': item['account'] if request.group_by_account else '',
+                'campaign': item['campaign'] if request.group_by_campaign else '',
+                'cost': 0.0,
+                'impressions': 0,
+                'installs': 0
+            }
+        
+        aggregated[key]['cost'] += item['cost']
+        aggregated[key]['impressions'] += item['impressions']
+        aggregated[key]['installs'] += item['installs']
     
-    group_cols = ['asset_name']
-    if request.group_by_account:
-        group_cols.append('account')
-    if request.group_by_campaign:
-        group_cols.append('campaign')
-    
-    result = df.groupby(group_cols).agg({
-        'cost': 'sum',
-        'impressions': 'sum',
-        'installs': 'sum'
-    }).reset_index()
-    
-    # Add missing columns with defaults
-    if not request.group_by_account:
-        result['account'] = ''
-    if not request.group_by_campaign:
-        result['campaign'] = ''
+    # Convert to list
+    result_list = list(aggregated.values())
     
     # Sort by cost descending
-    result = result.sort_values('cost', ascending=False)
+    result_list.sort(key=lambda x: x['cost'], reverse=True)
     
-    # Round values
-    result['cost'] = result['cost'].round(2)
-    result['installs'] = result['installs'].round(0).astype(int)
-    result['impressions'] = result['impressions'].astype(int)
+    # Round and cast values
+    for item in result_list:
+        item['cost'] = round(item['cost'], 2)
+        item['installs'] = int(round(item['installs'], 0))
+        item['impressions'] = int(item['impressions'])
     
     # Calculate totals
     totals = {
-        "cost": round(result['cost'].sum(), 2),
-        "impressions": int(result['impressions'].sum()),
-        "installs": int(result['installs'].sum())
+        "cost": round(sum(item['cost'] for item in result_list), 2),
+        "impressions": int(sum(item['impressions'] for item in result_list)),
+        "installs": int(sum(item['installs'] for item in result_list))
     }
     
     return {
-        "data": result.to_dict('records'),
+        "data": result_list,
         "totals": totals,
-        "count": len(result)
+        "count": len(result_list)
     }
 
 

@@ -1,0 +1,136 @@
+name: CI - Ganalytics Deploy
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+  pull_request:
+    branches:
+      - main
+      - develop
+
+  workflow_dispatch:
+    inputs:
+      deploy:
+        description: "Deploy after CI"
+        type: boolean
+        default: true
+
+concurrency:
+  group: "ci-${{ github.ref }}"
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE_NAME: ganalytics
+  REGISTRY: ghcr.io
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Generate lowercase repository owner
+        id: repo-owner
+        run: echo "lowercase=$(echo ${{ github.repository_owner }} | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
+
+      - name: Log in to GitHub Container Registry
+        if: github.ref == 'refs/heads/main' || (github.event_name == 'workflow_dispatch' && inputs.deploy)
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: ${{ github.ref == 'refs/heads/main' || (github.event_name == 'workflow_dispatch' && inputs.deploy) }}
+          tags: |
+            ${{ env.REGISTRY }}/${{ steps.repo-owner.outputs.lowercase }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+            ${{ env.REGISTRY }}/${{ steps.repo-owner.outputs.lowercase }}/${{ env.IMAGE_NAME }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs: build
+    if: github.ref == 'refs/heads/main' || (github.event_name == 'workflow_dispatch' && inputs.deploy)
+    env:
+      IMAGE_TAG: ${{ github.sha }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Copy docker-compose.yml to server
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          port: ${{ secrets.SERVER_PORT || 22 }}
+          source: "docker-compose.yml"
+          target: /opt/ganalytics/
+
+      - name: Deploy on server
+        uses: appleboy/ssh-action@v1.0.3
+        env:
+          REGISTRY: ${{ env.REGISTRY }}
+          IMAGE_NAME: ${{ env.IMAGE_NAME }}
+          IMAGE_TAG: ${{ env.IMAGE_TAG }}
+          REPO_OWNER: ${{ github.repository_owner }}
+          ENV_VARS: "OAUTH_GOOGLE_CLIENT_ID OAUTH_GOOGLE_CLIENT_SECRET OAUTH_SECRET_KEY ADS_DEVELOPER_TOKEN ADS_CLIENT_ID ADS_CLIENT_SECRET ADS_REFRESH_TOKEN ADS_LOGIN_CUSTOMER_ID ADS_USE_PROTO_PLUS"
+          OAUTH_GOOGLE_CLIENT_ID: ${{ secrets.OAUTH_GOOGLE_CLIENT_ID }}
+          OAUTH_GOOGLE_CLIENT_SECRET: ${{ secrets.OAUTH_GOOGLE_CLIENT_SECRET }}
+          OAUTH_SECRET_KEY: ${{ secrets.OAUTH_SECRET_KEY }}
+          ADS_DEVELOPER_TOKEN: ${{ secrets.ADS_DEVELOPER_TOKEN }}
+          ADS_CLIENT_ID: ${{ secrets.ADS_CLIENT_ID }}
+          ADS_CLIENT_SECRET: ${{ secrets.ADS_CLIENT_SECRET }}
+          ADS_REFRESH_TOKEN: ${{ secrets.ADS_REFRESH_TOKEN }}
+          ADS_LOGIN_CUSTOMER_ID: ${{ secrets.ADS_LOGIN_CUSTOMER_ID }}
+          ADS_USE_PROTO_PLUS: ${{ secrets.ADS_USE_PROTO_PLUS }}
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          port: ${{ secrets.SERVER_PORT || 22 }}
+          envs: REGISTRY,IMAGE_NAME,IMAGE_TAG,REPO_OWNER,ENV_VARS,OAUTH_GOOGLE_CLIENT_ID,OAUTH_GOOGLE_CLIENT_SECRET,OAUTH_SECRET_KEY,ADS_DEVELOPER_TOKEN,ADS_CLIENT_ID,ADS_CLIENT_SECRET,ADS_REFRESH_TOKEN,ADS_LOGIN_CUSTOMER_ID,ADS_USE_PROTO_PLUS
+          script: |
+            set -e
+            mkdir -p /opt/ganalytics
+            cd /opt/ganalytics
+
+            echo "🚀 Deploying ${REPO_OWNER}/${IMAGE_NAME}:${IMAGE_TAG}"
+
+            # Create .env file
+            > .env
+            for var in $ENV_VARS; do
+              eval "value=\${$var}"
+              echo "$var=$value" >> .env
+            done
+
+            # Pull latest image from GHCR
+            REPO_OWNER_LOWER=$(echo ${REPO_OWNER} | tr '[:upper:]' '[:lower:]')
+            docker pull ${REGISTRY}/${REPO_OWNER_LOWER}/${IMAGE_NAME}:${IMAGE_TAG}
+            docker tag ${REGISTRY}/${REPO_OWNER_LOWER}/${IMAGE_NAME}:${IMAGE_TAG} ${IMAGE_NAME}:latest
+
+            # Stop and start containers
+            docker compose down || true
+            docker compose up -d
+
+            # Cleanup old images (keep last 3)
+            docker images ${IMAGE_NAME} --format "{{.ID}}" | tail -n +4 | xargs -r docker rmi -f || true
+
+            echo "✅ Deployment complete! App should be available on port 8080."
