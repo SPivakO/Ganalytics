@@ -99,6 +99,10 @@ async def login(request: Request):
     if not redirect_uri:
         # Fallback to automatic detection
         redirect_uri = str(request.url_for('auth_callback'))
+    
+    # Force HTTPS if we are on the production domain
+    if "starplay.work" in redirect_uri and redirect_uri.startswith("http://"):
+        redirect_uri = redirect_uri.replace("http://", "https://", 1)
         
     return await oauth.google.authorize_redirect(request, redirect_uri)
 
