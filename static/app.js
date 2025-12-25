@@ -496,10 +496,16 @@ function buildStacked100Option(dates, series){
       name: s.name,
       type: 'line',
       smooth: true,
-      showSymbol: false,
+      showSymbol: true,
+      symbol: 'circle',
+      symbolSize: 4,
       stack: 'total',
       areaStyle: { opacity: 0.35 },
-      emphasis: { focus: 'series' },
+      emphasis: { 
+        focus: 'series',
+        scale: true,
+        symbolSize: 10
+      },
       data: s.dataPct,
       dataCost: s.dataCost,
       lineStyle: { width: 1.5 }
