@@ -766,7 +766,7 @@ tr:hover {
 }
 
 .dashboard-list {
-    flex: 0 0 280px;
+    flex: 0 0 500px;
     max-height: 220px;
     overflow-y: auto;
     background: var(--bg-tertiary);
