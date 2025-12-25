@@ -470,20 +470,15 @@ function buildStacked100Option(dates, series){
     color: palette,
     grid: { left: 40, right: 20, top: 20, bottom: 30, containLabel: true },
     tooltip: {
-      trigger: 'axis',
-      axisPointer: { type: 'line' },
+      trigger: 'item',
       formatter: (params) => {
-        if (!params || !params.length) return '';
-        const day = params[0].axisValue;
-        const rows = params.slice().sort((a,b)=> (b.data||0) - (a.data||0));
-        let html = `<div><strong>${day}</strong></div>`;
-        for (const p of rows) {
-          const pct = (p.data || 0);
-          const cost = (p.dataCost != null ? p.dataCost : null);
-          const costTxt = cost != null ? ` — $${Number(cost).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}` : '';
-          html += `<div>${escapeHtml(p.seriesName)}: ${pct.toFixed(1)}%${costTxt}</div>`;
-        }
-        return html;
+        if (!params) return '';
+        const day = params.name;
+        const pct = (params.data || 0);
+        const seriesData = params.seriesIndex != null ? series[params.seriesIndex] : null;
+        const cost = seriesData && seriesData.dataCost ? seriesData.dataCost[params.dataIndex] : null;
+        const costTxt = cost != null ? `<br/>Cost: $${Number(cost).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}` : '';
+        return `<strong>${day}</strong><br/>${escapeHtml(params.seriesName)}: ${pct.toFixed(1)}%${costTxt}`;
       }
     },
     xAxis: {

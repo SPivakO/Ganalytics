@@ -22,3 +22,7 @@ env/
 # OS
 .DS_Store
 Thumbs.db
+
+# Secrets
+google-ads.yaml
+.env.txt
