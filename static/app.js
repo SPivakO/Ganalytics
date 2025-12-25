@@ -31,7 +31,6 @@ const groupByCampaignCheckbox = document.getElementById('group-by-campaign');
 // Dashboard DOM
 const dashPlatformSelect = document.getElementById('dash-platform');
 const adjustAppTokenInput = document.getElementById('adjust-app-token');
-const adjustApiTokenInput = document.getElementById('adjust-api-token');
 const dashLoadBtn = document.getElementById('dash-load-btn');
 const chartGoogleEl = document.getElementById('chart-google');
 const chartApplovinEl = document.getElementById('chart-applovin');
@@ -410,14 +409,6 @@ function initializeDashboardDefaults(){
     const savedAppToken = localStorage.getItem('adjust_app_token');
     adjustAppTokenInput.value = savedAppToken || 'yypucqxkbu9s';
   }
-  if (adjustApiTokenInput) {
-    const saved = localStorage.getItem('adjust_api_token');
-    if (saved) adjustApiTokenInput.value = saved;
-    adjustApiTokenInput.addEventListener('change', () => {
-      const v = adjustApiTokenInput.value.trim();
-      if (v) localStorage.setItem('adjust_api_token', v);
-    });
-  }
   if (adjustAppTokenInput) {
     adjustAppTokenInput.addEventListener('change', () => {
       const v = adjustAppTokenInput.value.trim();
@@ -525,14 +516,11 @@ async function loadDashboard(){
   const ed = dashEndDateInput ? dashEndDateInput.value : '';
   const platform = dashPlatformSelect ? dashPlatformSelect.value : 'Android';
   const adjustAppToken = adjustAppTokenInput ? adjustAppTokenInput.value.trim() : '';
-  const adjustApiToken = adjustApiTokenInput ? adjustApiTokenInput.value.trim() : '';
 
   if(!sd || !ed) return showError('Please select date range');
   if(adgroupType==='test' && !testDate) return showError('Please enter test date (e.g. 181225)');
   if(!adjustAppToken) return showError('Please enter Adjust App Token');
-  if(!adjustApiToken) return showError('Please enter Adjust API Token');
 
-  localStorage.setItem('adjust_api_token', adjustApiToken);
   localStorage.setItem('adjust_app_token', adjustAppToken);
 
   hideError(); showLoading();
@@ -545,8 +533,7 @@ async function loadDashboard(){
     const resp = await fetch('/api/dashboard', {
       method:'POST',
       headers:{
-        'Content-Type':'application/json',
-        'X-Adjust-Token': adjustApiToken
+        'Content-Type':'application/json'
       },
       body: JSON.stringify({
         adgroup_type: adgroupType,

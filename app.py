@@ -652,11 +652,11 @@ async def dashboard(req: Request, body: DashboardRequest, user: dict[str, Any] =
     """
     Dashboard: 3 charts (Google/AppLovin/Mintegral) - top N creatives by spend over period,
     shown as % of daily spend (100% stacked).
-    Adjust token is provided via X-Adjust-Token header (not stored server-side).
+    Adjust token is read from ADJUST_API_TOKEN env variable.
     """
-    adjust_token = (req.headers.get("X-Adjust-Token") or "").strip()
+    adjust_token = os.environ.get("ADJUST_API_TOKEN", "").strip()
     if not adjust_token:
-        raise HTTPException(status_code=400, detail="Missing Adjust token (X-Adjust-Token)")
+        raise HTTPException(status_code=500, detail="ADJUST_API_TOKEN not configured on server")
     if not body.adjust_app_token:
         raise HTTPException(status_code=400, detail="Missing adjust_app_token")
 
