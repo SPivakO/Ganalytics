@@ -803,15 +803,31 @@ tr:hover {
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-    max-width: 180px;
+    flex: 1;
+    min-width: 0;
+}
+
+.dashboard-list-item .item-stats {
+    display: flex;
+    gap: 8px;
+    flex-shrink: 0;
+    margin-left: 8px;
+}
+
+.dashboard-list-item .item-cost {
+    font-size: 0.75rem;
+    color: var(--accent-orange);
+    font-weight: 500;
+    min-width: 45px;
+    text-align: right;
 }
 
 .dashboard-list-item .item-pct {
     font-size: 0.75rem;
     color: var(--accent-green);
     font-weight: 600;
-    margin-left: 8px;
-    flex-shrink: 0;
+    min-width: 40px;
+    text-align: right;
 }
 
 .dashboard-list-empty {

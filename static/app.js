@@ -578,16 +578,20 @@ function renderDashboardCard(key, data, chart, listEl) {
   // Render chart
   chart.setOption(buildStacked100Option(data.dates, data.series), true);
 
-  // Render list with avg % spend
+  // Render list with avg % spend and total cost
   const seriesWithAvg = data.series.map(s => {
     const avg = s.dataPct.reduce((a, b) => a + b, 0) / s.dataPct.length;
-    return { name: s.name, avgPct: avg };
+    const totalCost = s.dataCost.reduce((a, b) => a + b, 0);
+    return { name: s.name, avgPct: avg, totalCost: totalCost };
   }).sort((a, b) => b.avgPct - a.avgPct);
 
   listEl.innerHTML = seriesWithAvg.map((s, idx) => `
     <div class="dashboard-list-item" data-key="${key}" data-name="${escapeHtml(s.name)}" data-idx="${idx}">
       <span class="item-name" title="${escapeHtml(s.name)}">${escapeHtml(s.name)}</span>
-      <span class="item-pct">${s.avgPct.toFixed(1)}%</span>
+      <span class="item-stats">
+        <span class="item-cost">$${formatCompactNumber(s.totalCost)}</span>
+        <span class="item-pct">${s.avgPct.toFixed(1)}%</span>
+      </span>
     </div>
   `).join('');
 
@@ -595,6 +599,13 @@ function renderDashboardCard(key, data, chart, listEl) {
   listEl.querySelectorAll('.dashboard-list-item').forEach(item => {
     item.addEventListener('click', () => onListItemClick(key, item.dataset.name));
   });
+}
+
+function formatCompactNumber(num) {
+  if (num >= 1000) {
+    return (num / 1000).toFixed(1) + 'k';
+  }
+  return num.toFixed(0);
 }
 
 function onListItemClick(key, seriesName) {
