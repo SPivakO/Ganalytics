@@ -211,9 +211,16 @@ function renderTableHeader(){
 }
 function sortAndRenderTable(){
   const sorted=[...state.reportData].sort((a,b)=>{
-    let av=a[state.sortColumn]||'', bv=b[state.sortColumn]||'';
-    if(typeof av==='string'){av=av.toLowerCase(); bv=bv.toLowerCase();}
-    return state.sortDirection==='asc' ? (av>bv?1:-1) : (av<bv?1:-1);
+    let av=a[state.sortColumn], bv=b[state.sortColumn];
+    if(av===undefined || av===null) av='';
+    if(bv===undefined || bv===null) bv='';
+    if(typeof av==='string' && typeof bv==='string'){
+      av=av.toLowerCase();
+      bv=bv.toLowerCase();
+    }
+    if(av===bv) return 0;
+    const res = av > bv ? 1 : -1;
+    return state.sortDirection==='asc' ? res : -res;
   });
   resultsBody.innerHTML=sorted.map(r=>{
     let row = `<td class="asset-name" title="${escapeHtml(r.asset_name)}">${escapeHtml(r.asset_name)}</td>`;
