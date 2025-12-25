@@ -279,7 +279,7 @@ def _fetch_adjust_creative_daily_cost(api_token: str, app_token: str, channel_id
         "channel_id__in": f"\"{channel_id}\"",
         "index": "day",
         "dimensions": "creative_network,campaign",
-        "metrics": "cost",
+        "metrics": "cost,installs,network_impressions",
         "date_period": date_period,
         "ad_spend_mode": "network",
         "attribution_source": "first",
@@ -362,13 +362,30 @@ def _fetch_adjust_creative_daily_cost(api_token: str, app_token: str, channel_id
         creative = rr.get("creative_network") or rr.get("creative") or rr.get("creative_name")
         campaign = rr.get("campaign") or rr.get("campaign_name")
         cost = rr.get("cost") or rr.get("spend") or rr.get("ad_spend")
+        installs = rr.get("installs") or rr.get("install") or 0
+        impressions = rr.get("network_impressions") or rr.get("impressions") or 0
         if not day or not creative:
             continue
         try:
             cost_val = float(cost) if cost is not None and cost != "" else 0.0
         except:
             cost_val = 0.0
-        norm.append({"day": str(day)[:10], "creative_network": str(creative), "campaign": str(campaign or ""), "cost": cost_val})
+        try:
+            installs_val = int(float(installs)) if installs is not None and installs != "" else 0
+        except:
+            installs_val = 0
+        try:
+            impressions_val = int(float(impressions)) if impressions is not None and impressions != "" else 0
+        except:
+            impressions_val = 0
+        norm.append({
+            "day": str(day)[:10], 
+            "creative_network": str(creative), 
+            "campaign": str(campaign or ""), 
+            "cost": cost_val,
+            "installs": installs_val,
+            "impressions": impressions_val
+        })
     return norm, debug
 
 
@@ -678,6 +695,7 @@ async def dashboard(req: Request, body: DashboardRequest, user: dict[str, Any] =
         adgroup_filter = body.test_date or ""
 
     google_rows = []
+    google_cvr_data = []  # For CVR chart: impressions and conversions by day
     for acc in google_accounts:
         account_id = acc["id"]
         query = f"""
@@ -689,7 +707,9 @@ async def dashboard(req: Request, body: DashboardRequest, user: dict[str, Any] =
                 campaign.id,
                 campaign.name,
                 ad_group.name,
-                metrics.cost_micros
+                metrics.cost_micros,
+                metrics.impressions,
+                metrics.conversions
             FROM ad_group_ad_asset_view
             WHERE
                 asset.type = 'YOUTUBE_VIDEO'
@@ -715,6 +735,11 @@ async def dashboard(req: Request, body: DashboardRequest, user: dict[str, Any] =
                     "creative": normalized_name,
                     "cost": (row.metrics.cost_micros / 1_000_000) if row.metrics.cost_micros else 0.0
                 })
+                google_cvr_data.append({
+                    "day": str(row.segments.date),
+                    "impressions": row.metrics.impressions or 0,
+                    "installs": row.metrics.conversions or 0
+                })
         except GoogleAdsException:
             continue
 
@@ -726,6 +751,21 @@ async def dashboard(req: Request, body: DashboardRequest, user: dict[str, Any] =
         value_field="cost",
         top_n=body.top_n
     )
+
+    # -------- Build CVR data for Google --------
+    def build_cvr_by_day(cvr_data: list, dates: list) -> list:
+        """Aggregate impressions and installs by day, calculate CVR"""
+        df = pd.DataFrame(cvr_data) if cvr_data else pd.DataFrame(columns=["day", "impressions", "installs"])
+        if df.empty:
+            return [0.0] * len(dates)
+        df["day"] = df["day"].astype(str)
+        df["impressions"] = pd.to_numeric(df["impressions"], errors="coerce").fillna(0)
+        df["installs"] = pd.to_numeric(df["installs"], errors="coerce").fillna(0)
+        agg = df.groupby("day").agg({"impressions": "sum", "installs": "sum"}).reindex(dates, fill_value=0)
+        cvr = (agg["installs"] / agg["impressions"].replace({0: pd.NA})).fillna(0) * 100
+        return [round(float(x), 4) for x in cvr.values]
+
+    google_cvr = build_cvr_by_day(google_cvr_data, dates)
 
     # -------- Adjust (AppLovin + Mintegral) --------
     def build_adjust_channel(channel_id: str):
@@ -747,6 +787,9 @@ async def dashboard(req: Request, body: DashboardRequest, user: dict[str, Any] =
             value_field="cost",
             top_n=body.top_n
         )
+        # CVR data for this channel
+        cvr_rows = [{"day": r["day"], "impressions": r.get("impressions", 0), "installs": r.get("installs", 0)} for r in filtered]
+        cvr = build_cvr_by_day(cvr_rows, dates)
         meta = {
             "raw_rows": len(raw),
             "filtered_rows": len(filtered),
@@ -754,21 +797,21 @@ async def dashboard(req: Request, body: DashboardRequest, user: dict[str, Any] =
             "channel_id": channel_id,
             "debug": debug,
         }
-        return chart, meta
+        return chart, cvr, meta
 
     try:
-        applovin_chart, applovin_meta = build_adjust_channel("partner_7")
+        applovin_chart, applovin_cvr, applovin_meta = build_adjust_channel("partner_7")
         applovin_error = None
     except Exception as e:
-        applovin_chart, applovin_meta = {"dates": dates, "series": []}, {"raw_rows": 0, "filtered_rows": 0, "channel_id": "partner_7", "platform_sub": platform_sub}
+        applovin_chart, applovin_cvr, applovin_meta = {"dates": dates, "series": []}, [0.0] * len(dates), {"raw_rows": 0, "filtered_rows": 0, "channel_id": "partner_7", "platform_sub": platform_sub}
         applovin_error = str(e)
         print(f"[dashboard] Adjust AppLovin error: {applovin_error}")
 
     try:
-        mintegral_chart, mintegral_meta = build_adjust_channel("partner_369")
+        mintegral_chart, mintegral_cvr, mintegral_meta = build_adjust_channel("partner_369")
         mintegral_error = None
     except Exception as e:
-        mintegral_chart, mintegral_meta = {"dates": dates, "series": []}, {"raw_rows": 0, "filtered_rows": 0, "channel_id": "partner_369", "platform_sub": platform_sub}
+        mintegral_chart, mintegral_cvr, mintegral_meta = {"dates": dates, "series": []}, [0.0] * len(dates), {"raw_rows": 0, "filtered_rows": 0, "channel_id": "partner_369", "platform_sub": platform_sub}
         mintegral_error = str(e)
         print(f"[dashboard] Adjust Mintegral error: {mintegral_error}")
 
@@ -776,6 +819,12 @@ async def dashboard(req: Request, body: DashboardRequest, user: dict[str, Any] =
         "google": google_chart,
         "applovin": applovin_chart,
         "mintegral": mintegral_chart,
+        "cvr": {
+            "dates": dates,
+            "google": google_cvr,
+            "applovin": applovin_cvr,
+            "mintegral": mintegral_cvr
+        },
         "meta": {
             "applovin": applovin_meta,
             "mintegral": mintegral_meta,

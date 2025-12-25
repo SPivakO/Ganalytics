@@ -38,6 +38,7 @@ const chartMintegralEl = document.getElementById('chart-mintegral');
 const listGoogleEl = document.getElementById('list-google');
 const listApplovinEl = document.getElementById('list-applovin');
 const listMintegralEl = document.getElementById('list-mintegral');
+const chartCvrEl = document.getElementById('chart-cvr');
 const dashStartDateInput = document.getElementById('dash-start-date');
 const dashEndDateInput = document.getElementById('dash-end-date');
 
@@ -397,7 +398,7 @@ function showError(m){errorMessage.textContent=m; errorMessage.classList.remove(
 function hideError(){errorMessage.classList.add('hidden');}
 
 // ==================== DASHBOARD TAB ====================
-let _chartGoogle, _chartApplovin, _chartMintegral;
+let _chartGoogle, _chartApplovin, _chartMintegral, _chartCvr;
 
 function initializeDashboardDefaults(){
   if (adjustAppTokenInput && !adjustAppTokenInput.value) {
@@ -426,10 +427,12 @@ function ensureCharts(){
     if (chartGoogleEl && !_chartGoogle) _chartGoogle = echarts.init(chartGoogleEl);
     if (chartApplovinEl && !_chartApplovin) _chartApplovin = echarts.init(chartApplovinEl);
     if (chartMintegralEl && !_chartMintegral) _chartMintegral = echarts.init(chartMintegralEl);
+    if (chartCvrEl && !_chartCvr) _chartCvr = echarts.init(chartCvrEl);
     window.addEventListener('resize', () => {
       _chartGoogle && _chartGoogle.resize();
       _chartApplovin && _chartApplovin.resize();
       _chartMintegral && _chartMintegral.resize();
+      _chartCvr && _chartCvr.resize();
     });
   }
 }
@@ -448,6 +451,74 @@ function setEmptyChart(chart, title, subtitle){
     yAxis: { show: false },
     series: []
   }, true);
+}
+
+function buildCvrLineChart(dates, cvrData) {
+  const colors = {
+    google: '#58a6ff',
+    applovin: '#a371f7', 
+    mintegral: '#3fb950'
+  };
+  
+  return {
+    color: [colors.google, colors.applovin, colors.mintegral],
+    grid: { left: 50, right: 20, top: 20, bottom: 40, containLabel: true },
+    tooltip: {
+      trigger: 'axis',
+      formatter: (params) => {
+        if (!params || !params.length) return '';
+        let html = `<strong>${params[0].name}</strong><br/>`;
+        params.forEach(p => {
+          html += `${p.marker} ${p.seriesName}: ${p.data.toFixed(3)}%<br/>`;
+        });
+        return html;
+      }
+    },
+    legend: {
+      data: ['Google', 'AppLovin', 'Mintegral'],
+      bottom: 0,
+      textStyle: { color: '#8b949e' }
+    },
+    xAxis: {
+      type: 'category',
+      data: dates,
+      axisLabel: { color: '#8b949e', fontSize: 10 }
+    },
+    yAxis: {
+      type: 'value',
+      axisLabel: { color: '#8b949e', formatter: '{value}%' },
+      splitLine: { lineStyle: { color: '#30363d' } }
+    },
+    series: [
+      {
+        name: 'Google',
+        type: 'line',
+        smooth: true,
+        symbol: 'circle',
+        symbolSize: 4,
+        data: cvrData.google || [],
+        lineStyle: { width: 2 }
+      },
+      {
+        name: 'AppLovin',
+        type: 'line',
+        smooth: true,
+        symbol: 'circle',
+        symbolSize: 4,
+        data: cvrData.applovin || [],
+        lineStyle: { width: 2 }
+      },
+      {
+        name: 'Mintegral',
+        type: 'line',
+        smooth: true,
+        symbol: 'circle',
+        symbolSize: 4,
+        data: cvrData.mintegral || [],
+        lineStyle: { width: 2 }
+      }
+    ]
+  };
 }
 
 function buildStacked100Option(dates, series){
@@ -524,6 +595,7 @@ async function loadDashboard(){
   setEmptyChart(_chartGoogle, 'Loading...', '');
   setEmptyChart(_chartApplovin, 'Loading...', '');
   setEmptyChart(_chartMintegral, 'Loading...', '');
+  setEmptyChart(_chartCvr, 'Loading...', '');
   setEmptyList(listGoogleEl);
   setEmptyList(listApplovinEl);
   setEmptyList(listMintegralEl);
@@ -548,6 +620,13 @@ async function loadDashboard(){
 
     _dashboardData = { google: data.google, applovin: data.applovin, mintegral: data.mintegral };
     _selectedSeries = { google: null, applovin: null, mintegral: null };
+
+    // CVR Chart
+    if (data.cvr && data.cvr.dates) {
+      _chartCvr.setOption(buildCvrLineChart(data.cvr.dates, data.cvr), true);
+    } else {
+      setEmptyChart(_chartCvr, 'CVR', 'No data');
+    }
 
     // Google
     renderDashboardCard('google', data.google, _chartGoogle, listGoogleEl);
