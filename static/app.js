@@ -35,9 +35,11 @@ const dashLoadBtn = document.getElementById('dash-load-btn');
 const chartGoogleEl = document.getElementById('chart-google');
 const chartApplovinEl = document.getElementById('chart-applovin');
 const chartMintegralEl = document.getElementById('chart-mintegral');
+const listGoogleEl = document.getElementById('list-google');
+const listApplovinEl = document.getElementById('list-applovin');
+const listMintegralEl = document.getElementById('list-mintegral');
 const dashStartDateInput = document.getElementById('dash-start-date');
 const dashEndDateInput = document.getElementById('dash-end-date');
-const dashTestDateInput = document.getElementById('dash-test-date');
 
 // Upload DOM
 const uploadAccountsContainer = document.getElementById('upload-accounts-container');
@@ -98,13 +100,6 @@ function setupEventListeners(){
   downloadBtn.addEventListener('click', downloadCSV);
   uploadBtn.addEventListener('click', createTestAdGroups);
   if (dashLoadBtn) dashLoadBtn.addEventListener('click', loadDashboard);
-  document.querySelectorAll('input[name="dash_adgroup_type"]').forEach(r=>{
-    r.addEventListener('change', e=>{
-      if (!dashTestDateInput) return;
-      dashTestDateInput.disabled = e.target.value !== 'test';
-      if(e.target.value==='test') dashTestDateInput.focus();
-    });
-  });
 }
 
 // ==================== REPORTS TAB ====================
@@ -509,16 +504,17 @@ function buildStacked100Option(dates, series){
   };
 }
 
+// Store dashboard data for interactivity
+let _dashboardData = { google: null, applovin: null, mintegral: null };
+let _selectedSeries = { google: null, applovin: null, mintegral: null };
+
 async function loadDashboard(){
-  const adgroupType = document.querySelector('input[name="dash_adgroup_type"]:checked')?.value || 'main';
-  const testDate = dashTestDateInput ? dashTestDateInput.value : '';
   const sd = dashStartDateInput ? dashStartDateInput.value : '';
   const ed = dashEndDateInput ? dashEndDateInput.value : '';
   const platform = dashPlatformSelect ? dashPlatformSelect.value : 'Android';
   const adjustAppToken = adjustAppTokenInput ? adjustAppTokenInput.value.trim() : '';
 
   if(!sd || !ed) return showError('Please select date range');
-  if(adgroupType==='test' && !testDate) return showError('Please enter test date (e.g. 181225)');
   if(!adjustAppToken) return showError('Please enter Adjust App Token');
 
   localStorage.setItem('adjust_app_token', adjustAppToken);
@@ -528,6 +524,9 @@ async function loadDashboard(){
   setEmptyChart(_chartGoogle, 'Loading...', '');
   setEmptyChart(_chartApplovin, 'Loading...', '');
   setEmptyChart(_chartMintegral, 'Loading...', '');
+  setEmptyList(listGoogleEl);
+  setEmptyList(listApplovinEl);
+  setEmptyList(listMintegralEl);
 
   try{
     const resp = await fetch('/api/dashboard', {
@@ -536,8 +535,8 @@ async function loadDashboard(){
         'Content-Type':'application/json'
       },
       body: JSON.stringify({
-        adgroup_type: adgroupType,
-        test_date: testDate,
+        adgroup_type: 'main',
+        test_date: '',
         start_date: sd,
         end_date: ed,
         platform: platform,
@@ -547,28 +546,91 @@ async function loadDashboard(){
     const data = await resp.json();
     if(!resp.ok) throw new Error(data.detail||'Failed to load dashboard');
 
+    _dashboardData = { google: data.google, applovin: data.applovin, mintegral: data.mintegral };
+    _selectedSeries = { google: null, applovin: null, mintegral: null };
+
     // Google
-    if (data.google && data.google.dates && data.google.series) {
-      _chartGoogle.setOption(buildStacked100Option(data.google.dates, data.google.series), true);
-    } else {
-      setEmptyChart(_chartGoogle, 'Google', 'No data');
-    }
+    renderDashboardCard('google', data.google, _chartGoogle, listGoogleEl);
     // AppLovin
-    if (data.applovin && data.applovin.dates && data.applovin.series) {
-      _chartApplovin.setOption(buildStacked100Option(data.applovin.dates, data.applovin.series), true);
-    } else {
-      setEmptyChart(_chartApplovin, 'AppLovin', 'No data');
-    }
+    renderDashboardCard('applovin', data.applovin, _chartApplovin, listApplovinEl);
     // Mintegral
-    if (data.mintegral && data.mintegral.dates && data.mintegral.series) {
-      _chartMintegral.setOption(buildStacked100Option(data.mintegral.dates, data.mintegral.series), true);
-    } else {
-      setEmptyChart(_chartMintegral, 'Mintegral', 'No data');
-    }
+    renderDashboardCard('mintegral', data.mintegral, _chartMintegral, listMintegralEl);
 
   }catch(e){
     showError('Failed to load dashboard: ' + e.message);
   }finally{
     hideLoading();
+  }
+}
+
+function setEmptyList(listEl) {
+  if (!listEl) return;
+  listEl.innerHTML = '<div class="dashboard-list-empty">No data</div>';
+}
+
+function renderDashboardCard(key, data, chart, listEl) {
+  if (!data || !data.dates || !data.series || !data.series.length) {
+    setEmptyChart(chart, key.charAt(0).toUpperCase() + key.slice(1), 'No data');
+    setEmptyList(listEl);
+    return;
+  }
+
+  // Render chart
+  chart.setOption(buildStacked100Option(data.dates, data.series), true);
+
+  // Render list with avg % spend
+  const seriesWithAvg = data.series.map(s => {
+    const avg = s.dataPct.reduce((a, b) => a + b, 0) / s.dataPct.length;
+    return { name: s.name, avgPct: avg };
+  }).sort((a, b) => b.avgPct - a.avgPct);
+
+  listEl.innerHTML = seriesWithAvg.map((s, idx) => `
+    <div class="dashboard-list-item" data-key="${key}" data-name="${escapeHtml(s.name)}" data-idx="${idx}">
+      <span class="item-name" title="${escapeHtml(s.name)}">${escapeHtml(s.name)}</span>
+      <span class="item-pct">${s.avgPct.toFixed(1)}%</span>
+    </div>
+  `).join('');
+
+  // Add click handlers
+  listEl.querySelectorAll('.dashboard-list-item').forEach(item => {
+    item.addEventListener('click', () => onListItemClick(key, item.dataset.name));
+  });
+}
+
+function onListItemClick(key, seriesName) {
+  const chart = key === 'google' ? _chartGoogle : key === 'applovin' ? _chartApplovin : _chartMintegral;
+  const listEl = key === 'google' ? listGoogleEl : key === 'applovin' ? listApplovinEl : listMintegralEl;
+  const data = _dashboardData[key];
+
+  if (!chart || !data) return;
+
+  // Toggle selection
+  if (_selectedSeries[key] === seriesName) {
+    _selectedSeries[key] = null;
+  } else {
+    _selectedSeries[key] = seriesName;
+  }
+
+  const selected = _selectedSeries[key];
+
+  // Update list styling
+  listEl.querySelectorAll('.dashboard-list-item').forEach(item => {
+    item.classList.remove('active', 'dimmed');
+    if (selected) {
+      if (item.dataset.name === selected) {
+        item.classList.add('active');
+      } else {
+        item.classList.add('dimmed');
+      }
+    }
+  });
+
+  // Highlight series on chart
+  if (selected) {
+    chart.dispatchAction({ type: 'highlight', seriesName: selected });
+    chart.dispatchAction({ type: 'downplay' });
+    chart.dispatchAction({ type: 'highlight', seriesName: selected });
+  } else {
+    chart.dispatchAction({ type: 'downplay' });
   }
 }

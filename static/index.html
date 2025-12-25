@@ -222,22 +222,6 @@ Shoot web, hook, swing, throw enemies and fight in the air like real Spider-man<
                             <input type="date" id="dash-end-date" value="">
                         </div>
                     </div>
-                    <div class="filter-group adgroup-type">
-                        <label>Ad Group Type</label>
-                        <div class="radio-group">
-                            <label class="radio-label">
-                                <input type="radio" name="dash_adgroup_type" value="main" checked>
-                                <span class="radio-custom"></span>
-                                Main (Production)
-                            </label>
-                            <label class="radio-label">
-                                <input type="radio" name="dash_adgroup_type" value="test">
-                                <span class="radio-custom"></span>
-                                Test
-                                <input type="text" id="dash-test-date" class="test-date-input" placeholder="e.g. 181225" disabled>
-                            </label>
-                        </div>
-                    </div>
                     <div class="filter-group">
                         <label>Platform (by campaign name)</label>
                         <select id="dash-platform" class="text-input">
@@ -268,15 +252,30 @@ Shoot web, hook, swing, throw enemies and fight in the air like real Spider-man<
             <div class="dashboard-grid">
                 <div class="dashboard-card">
                     <div class="dashboard-title">Google (Top 10 creatives, % of daily spend)</div>
-                    <div id="chart-google" class="dashboard-chart"></div>
+                    <div class="dashboard-split">
+                        <div class="dashboard-list" id="list-google"></div>
+                        <div class="dashboard-chart-wrap">
+                            <div id="chart-google" class="dashboard-chart"></div>
+                        </div>
+                    </div>
                 </div>
                 <div class="dashboard-card">
                     <div class="dashboard-title">AppLovin (Adjust) (Top 10 creatives, % of daily spend)</div>
-                    <div id="chart-applovin" class="dashboard-chart"></div>
+                    <div class="dashboard-split">
+                        <div class="dashboard-list" id="list-applovin"></div>
+                        <div class="dashboard-chart-wrap">
+                            <div id="chart-applovin" class="dashboard-chart"></div>
+                        </div>
+                    </div>
                 </div>
                 <div class="dashboard-card">
                     <div class="dashboard-title">Mintegral (Adjust) (Top 10 creatives, % of daily spend)</div>
-                    <div id="chart-mintegral" class="dashboard-chart"></div>
+                    <div class="dashboard-split">
+                        <div class="dashboard-list" id="list-mintegral"></div>
+                        <div class="dashboard-chart-wrap">
+                            <div id="chart-mintegral" class="dashboard-chart"></div>
+                        </div>
+                    </div>
                 </div>
             </div>
         </div>
