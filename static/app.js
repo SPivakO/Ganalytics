@@ -6,7 +6,12 @@ let state = {
   sortColumn: 'cost',
   sortDirection: 'desc',
   showAccount: false,
-  showCampaign: true
+  showCampaign: true,
+  dashboard: {
+    google: null,
+    applovin: null,
+    mintegral: null
+  }
 };
 
 // Reports DOM
@@ -22,6 +27,18 @@ const resultsBody = document.getElementById('results-body');
 const resultsThead = document.getElementById('results-thead');
 const groupByAccountCheckbox = document.getElementById('group-by-account');
 const groupByCampaignCheckbox = document.getElementById('group-by-campaign');
+
+// Dashboard DOM
+const dashPlatformSelect = document.getElementById('dash-platform');
+const adjustAppTokenInput = document.getElementById('adjust-app-token');
+const adjustApiTokenInput = document.getElementById('adjust-api-token');
+const dashLoadBtn = document.getElementById('dash-load-btn');
+const chartGoogleEl = document.getElementById('chart-google');
+const chartApplovinEl = document.getElementById('chart-applovin');
+const chartMintegralEl = document.getElementById('chart-mintegral');
+const dashStartDateInput = document.getElementById('dash-start-date');
+const dashEndDateInput = document.getElementById('dash-end-date');
+const dashTestDateInput = document.getElementById('dash-test-date');
 
 // Upload DOM
 const uploadAccountsContainer = document.getElementById('upload-accounts-container');
@@ -44,6 +61,8 @@ document.addEventListener('DOMContentLoaded', () => {
   initializeTabs();
   loadAccounts();
   setupEventListeners();
+  initializeDashboardDefaults();
+  initializeDashboardDates();
 });
 
 function initializeDates() {
@@ -79,6 +98,14 @@ function setupEventListeners(){
   loadBtn.addEventListener('click', loadReport);
   downloadBtn.addEventListener('click', downloadCSV);
   uploadBtn.addEventListener('click', createTestAdGroups);
+  if (dashLoadBtn) dashLoadBtn.addEventListener('click', loadDashboard);
+  document.querySelectorAll('input[name="dash_adgroup_type"]').forEach(r=>{
+    r.addEventListener('change', e=>{
+      if (!dashTestDateInput) return;
+      dashTestDateInput.disabled = e.target.value !== 'test';
+      if(e.target.value==='test') dashTestDateInput.focus();
+    });
+  });
 }
 
 // ==================== REPORTS TAB ====================
@@ -265,7 +292,7 @@ async function onUploadAccountChange() {
   }
   uploadCampaignsContainer.innerHTML = '<div class="loading">Loading campaigns...</div>';
   try {
-    const response = await fetch(`/api/all-campaigns?account_ids=${selectedIds.join(',')}`);
+    const response = await fetch(`/api/all_campaigns?account_ids=${selectedIds.join(',')}`);
     const data = await response.json();
     if (!response.ok) throw new Error(data.detail || 'Failed to load campaigns');
     renderUploadCampaigns(data.campaigns);
@@ -374,3 +401,186 @@ function showLoading(){loadingOverlay.classList.remove('hidden'); loadBtn.disabl
 function hideLoading(){loadingOverlay.classList.add('hidden'); loadBtn.disabled=false; uploadBtn.disabled=false;}
 function showError(m){errorMessage.textContent=m; errorMessage.classList.remove('hidden');}
 function hideError(){errorMessage.classList.add('hidden');}
+
+// ==================== DASHBOARD TAB ====================
+let _chartGoogle, _chartApplovin, _chartMintegral;
+
+function initializeDashboardDefaults(){
+  if (adjustAppTokenInput && !adjustAppTokenInput.value) {
+    const savedAppToken = localStorage.getItem('adjust_app_token');
+    adjustAppTokenInput.value = savedAppToken || 'yypucqxkbu9s';
+  }
+  if (adjustApiTokenInput) {
+    const saved = localStorage.getItem('adjust_api_token');
+    if (saved) adjustApiTokenInput.value = saved;
+    adjustApiTokenInput.addEventListener('change', () => {
+      const v = adjustApiTokenInput.value.trim();
+      if (v) localStorage.setItem('adjust_api_token', v);
+    });
+  }
+  if (adjustAppTokenInput) {
+    adjustAppTokenInput.addEventListener('change', () => {
+      const v = adjustAppTokenInput.value.trim();
+      if (v) localStorage.setItem('adjust_app_token', v);
+    });
+  }
+}
+
+function initializeDashboardDates(){
+  if (!dashStartDateInput || !dashEndDateInput) return;
+  const now = new Date();
+  const firstDay = new Date(now.getFullYear(), now.getMonth(), 1);
+  const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+  dashStartDateInput.value = formatDate(firstDay);
+  dashEndDateInput.value = formatDate(lastDay);
+}
+
+function ensureCharts(){
+  if (window.echarts) {
+    if (chartGoogleEl && !_chartGoogle) _chartGoogle = echarts.init(chartGoogleEl);
+    if (chartApplovinEl && !_chartApplovin) _chartApplovin = echarts.init(chartApplovinEl);
+    if (chartMintegralEl && !_chartMintegral) _chartMintegral = echarts.init(chartMintegralEl);
+    window.addEventListener('resize', () => {
+      _chartGoogle && _chartGoogle.resize();
+      _chartApplovin && _chartApplovin.resize();
+      _chartMintegral && _chartMintegral.resize();
+    });
+  }
+}
+
+function setEmptyChart(chart, title, subtitle){
+  if (!chart) return;
+  chart.setOption({
+    title: {
+      text: title,
+      subtext: subtitle || 'No data',
+      left: 'center',
+      textStyle: { color: '#e6edf3', fontSize: 14 },
+      subtextStyle: { color: '#8b949e', fontSize: 12 }
+    },
+    xAxis: { show: false },
+    yAxis: { show: false },
+    series: []
+  }, true);
+}
+
+function buildStacked100Option(dates, series){
+  const palette = ['#58a6ff','#a371f7','#3fb950','#f0883e','#f85149','#8b949e','#d2a8ff','#79c0ff','#56d364','#ffa657'];
+  return {
+    color: palette,
+    grid: { left: 40, right: 20, top: 20, bottom: 30, containLabel: true },
+    tooltip: {
+      trigger: 'axis',
+      axisPointer: { type: 'line' },
+      formatter: (params) => {
+        if (!params || !params.length) return '';
+        const day = params[0].axisValue;
+        const rows = params.slice().sort((a,b)=> (b.data||0) - (a.data||0));
+        let html = `<div><strong>${day}</strong></div>`;
+        for (const p of rows) {
+          const pct = (p.data || 0);
+          const cost = (p.dataCost != null ? p.dataCost : null);
+          const costTxt = cost != null ? ` — $${Number(cost).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}` : '';
+          html += `<div>${escapeHtml(p.seriesName)}: ${pct.toFixed(1)}%${costTxt}</div>`;
+        }
+        return html;
+      }
+    },
+    xAxis: {
+      type: 'category',
+      data: dates,
+      axisLabel: { color: '#8b949e', fontSize: 11 }
+    },
+    yAxis: {
+      type: 'value',
+      min: 0,
+      max: 100,
+      axisLabel: { color: '#8b949e', formatter: '{value}%' }
+    },
+    series: series.map((s, idx) => ({
+      name: s.name,
+      type: 'line',
+      smooth: true,
+      showSymbol: false,
+      stack: 'total',
+      areaStyle: { opacity: 0.35 },
+      emphasis: { focus: 'series' },
+      data: s.dataPct,
+      dataCost: s.dataCost,
+      lineStyle: { width: 1.5 }
+    })),
+    legend: {
+      type: 'scroll',
+      bottom: 0,
+      textStyle: { color: '#8b949e' }
+    }
+  };
+}
+
+async function loadDashboard(){
+  const adgroupType = document.querySelector('input[name="dash_adgroup_type"]:checked')?.value || 'main';
+  const testDate = dashTestDateInput ? dashTestDateInput.value : '';
+  const sd = dashStartDateInput ? dashStartDateInput.value : '';
+  const ed = dashEndDateInput ? dashEndDateInput.value : '';
+  const platform = dashPlatformSelect ? dashPlatformSelect.value : 'Android';
+  const adjustAppToken = adjustAppTokenInput ? adjustAppTokenInput.value.trim() : '';
+  const adjustApiToken = adjustApiTokenInput ? adjustApiTokenInput.value.trim() : '';
+
+  if(!sd || !ed) return showError('Please select date range');
+  if(adgroupType==='test' && !testDate) return showError('Please enter test date (e.g. 181225)');
+  if(!adjustAppToken) return showError('Please enter Adjust App Token');
+  if(!adjustApiToken) return showError('Please enter Adjust API Token');
+
+  localStorage.setItem('adjust_api_token', adjustApiToken);
+  localStorage.setItem('adjust_app_token', adjustAppToken);
+
+  hideError(); showLoading();
+  ensureCharts();
+  setEmptyChart(_chartGoogle, 'Loading...', '');
+  setEmptyChart(_chartApplovin, 'Loading...', '');
+  setEmptyChart(_chartMintegral, 'Loading...', '');
+
+  try{
+    const resp = await fetch('/api/dashboard', {
+      method:'POST',
+      headers:{
+        'Content-Type':'application/json',
+        'X-Adjust-Token': adjustApiToken
+      },
+      body: JSON.stringify({
+        adgroup_type: adgroupType,
+        test_date: testDate,
+        start_date: sd,
+        end_date: ed,
+        platform: platform,
+        adjust_app_token: adjustAppToken
+      })
+    });
+    const data = await resp.json();
+    if(!resp.ok) throw new Error(data.detail||'Failed to load dashboard');
+
+    // Google
+    if (data.google && data.google.dates && data.google.series) {
+      _chartGoogle.setOption(buildStacked100Option(data.google.dates, data.google.series), true);
+    } else {
+      setEmptyChart(_chartGoogle, 'Google', 'No data');
+    }
+    // AppLovin
+    if (data.applovin && data.applovin.dates && data.applovin.series) {
+      _chartApplovin.setOption(buildStacked100Option(data.applovin.dates, data.applovin.series), true);
+    } else {
+      setEmptyChart(_chartApplovin, 'AppLovin', 'No data');
+    }
+    // Mintegral
+    if (data.mintegral && data.mintegral.dates && data.mintegral.series) {
+      _chartMintegral.setOption(buildStacked100Option(data.mintegral.dates, data.mintegral.series), true);
+    } else {
+      setEmptyChart(_chartMintegral, 'Mintegral', 'No data');
+    }
+
+  }catch(e){
+    showError('Failed to load dashboard: ' + e.message);
+  }finally{
+    hideLoading();
+  }
+}

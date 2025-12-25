@@ -9,7 +9,14 @@ from pydantic import BaseModel
 from typing import List, Optional, Any
 from google.ads.googleads.client import GoogleAdsClient
 from google.ads.googleads.errors import GoogleAdsException
+import pandas as pd
 import re
+import json
+import csv
+import io
+from urllib import request as urlrequest
+from urllib import parse as urlparse
+from urllib.error import HTTPError, URLError
 
 load_dotenv()
 
@@ -82,6 +89,287 @@ class ReportRequest(BaseModel):
     end_date: str
     group_by_account: bool = False
     group_by_campaign: bool = True
+
+
+class DashboardRequest(BaseModel):
+    adgroup_type: str  # "main" or "test"
+    test_date: Optional[str] = None
+    start_date: str
+    end_date: str
+    platform: str  # "Android" or "iOS"
+    adjust_app_token: str
+    top_n: int = 10
+
+
+def normalize_applovin_creative(name: str) -> str:
+    """Remove Applovin hash prefix (MD5 hash only)"""
+    if not name:
+        return name
+    normalized = re.sub(r'^[a-f0-9]{32}_', '', name, flags=re.IGNORECASE)
+    return normalized
+
+
+def _platform_substr(platform: str) -> str:
+    p = (platform or "").strip().lower()
+    if p == "ios":
+        return "ios"
+    return "android"
+
+
+def _platform_keyword(platform: str) -> str:
+    p = (platform or "").strip().lower()
+    return "iOS" if p == "ios" else "Android"
+
+
+def _safe_contains_platform(name: str, platform: str) -> bool:
+    if not name:
+        return False
+    return _platform_substr(platform) in name.lower()
+
+
+def _make_date_range(start_date: str, end_date: str) -> List[str]:
+    dr = pd.date_range(start=start_date, end=end_date, freq="D")
+    return [d.strftime("%Y-%m-%d") for d in dr]
+
+
+def _build_stacked_100(dates: List[str], rows: List[dict], key_field: str, date_field: str, value_field: str, top_n: int):
+    if not rows:
+        return {"dates": dates, "series": []}
+    df = pd.DataFrame(rows)
+    if df.empty:
+        return {"dates": dates, "series": []}
+
+    df[value_field] = pd.to_numeric(df[value_field], errors="coerce").fillna(0.0)
+    df[date_field] = df[date_field].astype(str)
+    df[key_field] = df[key_field].fillna("").astype(str)
+    df = df[(df[key_field] != "") & (df[value_field] > 0)]
+    if df.empty:
+        return {"dates": dates, "series": []}
+
+    totals = df.groupby(key_field)[value_field].sum().sort_values(ascending=False).head(top_n)
+    top_keys = list(totals.index)
+    df = df[df[key_field].isin(top_keys)]
+
+    pivot = df.pivot_table(index=date_field, columns=key_field, values=value_field, aggfunc="sum", fill_value=0.0)
+    pivot = pivot.reindex(dates, fill_value=0.0)
+
+    daily_total = pivot.sum(axis=1)
+    pct = pivot.div(daily_total.replace({0: pd.NA}), axis=0).fillna(0.0) * 100.0
+
+    series = []
+    for k in top_keys:
+        if k not in pct.columns:
+            continue
+        series.append({
+            "name": k,
+            "dataPct": [float(x) for x in pct[k].values],
+            "dataCost": [float(x) for x in pivot[k].values],
+        })
+    return {"dates": dates, "series": series}
+
+
+def _adjust_request(url: str, api_token: str, method: str = "GET", json_body: Optional[dict] = None):
+    headers_variants = [
+        {"Authorization": f"Bearer {api_token}", "Accept": "*/*"},
+        {"Authorization": f"Token token={api_token}", "Accept": "*/*"},
+    ]
+    data = None
+    if json_body is not None:
+        data = json.dumps(json_body).encode("utf-8")
+    last_err = None
+    for headers in headers_variants:
+        try:
+            h = dict(headers)
+            if data is not None:
+                h["Content-Type"] = "application/json"
+            req = urlrequest.Request(url, headers=h, method=method, data=data)
+            with urlrequest.urlopen(req, timeout=60) as resp:
+                content_type = resp.headers.get("Content-Type", "")
+                body = resp.read()
+                return {"status": getattr(resp, "status", 200), "content_type": content_type, "body": body, "method": method}
+        except HTTPError as e:
+            try:
+                body = e.read()
+            except Exception:
+                body = b""
+            last_err = RuntimeError(f"Adjust HTTPError {e.code}: {e.reason}. Body: {body[:300]!r}")
+        except URLError as e:
+            last_err = RuntimeError(f"Adjust URLError: {e.reason}")
+        except Exception as e:
+            last_err = e
+            continue
+    raise last_err or RuntimeError("Adjust request failed")
+
+
+def _parse_adjust_payload(content_type: str, body: bytes) -> List[dict]:
+    text = body.decode("utf-8", errors="replace")
+    ct = (content_type or "").lower()
+    if "text/html" in ct or text.lstrip().lower().startswith("<!doctype") or text.lstrip().lower().startswith("<html"):
+        raise RuntimeError(f"Adjust returned HTML, not data. Snippet: {text[:300]!r}")
+    if "application/json" in ct or text.strip().startswith("{") or text.strip().startswith("["):
+        data = json.loads(text)
+        if isinstance(data, dict):
+            for k in ("rows", "data", "result", "results"):
+                if k in data and isinstance(data[k], list):
+                    return data[k]
+        if isinstance(data, list):
+            return data
+        return []
+    f = io.StringIO(text)
+    reader = csv.DictReader(f)
+    return [row for row in reader]
+
+
+def _norm_key(k: str) -> str:
+    k = (k or "").strip().lower()
+    k = re.sub(r"[^a-z0-9]+", "_", k)
+    k = re.sub(r"_+", "_", k).strip("_")
+    return k
+
+
+def _looks_like_date_key(s: str) -> bool:
+    return bool(re.match(r"^\d{4}-\d{2}-\d{2}$", (s or "").strip()))
+
+
+def _flatten_adjust_rows(rows: List[dict]) -> List[dict]:
+    out: List[dict] = []
+    for r in rows:
+        if not isinstance(r, dict) or not r:
+            continue
+        found_nested = False
+        for k, v in r.items():
+            if _looks_like_date_key(k):
+                found_nested = True
+                day = k
+                inner_rows = []
+                if isinstance(v, dict):
+                    if isinstance(v.get("rows"), list):
+                        inner_rows = v["rows"]
+                    elif isinstance(v.get("data"), list):
+                        inner_rows = v["data"]
+                    else:
+                        ii = dict(v)
+                        ii["day"] = day
+                        out.append(ii)
+                        continue
+                elif isinstance(v, list):
+                    inner_rows = v
+                for inner in inner_rows:
+                    if isinstance(inner, dict):
+                        ii = dict(inner)
+                        ii["day"] = day
+                        out.append(ii)
+        if found_nested:
+            continue
+        out.append(r)
+    return out
+
+
+def _store_type_for_platform(platform: str) -> str:
+    p = (platform or "").strip().lower()
+    return "app_store" if p == "ios" else "google_play"
+
+
+def _fetch_adjust_creative_daily_cost(api_token: str, app_token: str, channel_id: str, start_date: str, end_date: str, platform: str):
+    base = "https://automate.adjust.com/reports-service/pivot_report"
+    date_period = f"{start_date}:{end_date}"
+    store_type = _store_type_for_platform(platform)
+    params = {
+        "app_token__in": f"\"{app_token}\"",
+        "channel_id__in": f"\"{channel_id}\"",
+        "index": "day",
+        "dimensions": "creative_network,campaign",
+        "metrics": "cost",
+        "date_period": date_period,
+        "ad_spend_mode": "network",
+        "attribution_source": "first",
+        "reattributed": "all",
+        "sandbox": "false",
+        "cohort_maturity": "immature",
+        "store_type__in": f"\"{store_type}\"",
+        "format_dates": "true",
+        "full_data": "true",
+        "readable_names": "true",
+    }
+    url = base + "?" + urlparse.urlencode(params, safe=",:\"")
+    try:
+        resp = _adjust_request(url, api_token=api_token, method="GET")
+        raw_body = resp.get("body", b"") or b""
+        rows = _parse_adjust_payload(resp.get("content_type", ""), raw_body)
+    except Exception as e:
+        msg = str(e)
+        if "loc\":[\"index\"]" in msg or "loc\":[\"date_period\"]" in msg or "validation_error" in msg:
+            payload_variants = [
+                {
+                    "app_token__in": f"\"{app_token}\"",
+                    "channel_id__in": f"\"{channel_id}\"",
+                    "index": "day",
+                    "dimensions": "creative_network,campaign",
+                    "metrics": "cost",
+                    "date_period": date_period,
+                    "format_dates": False,
+                    "full_data": True,
+                    "readable_names": True,
+                },
+                {
+                    "index": "day",
+                    "dimensions": ["creative_network", "campaign"],
+                    "metrics": ["cost"],
+                    "date_period": date_period,
+                    "filters": {
+                        "app_token__in": [app_token],
+                        "channel_id__in": [channel_id],
+                    },
+                    "readable_names": True,
+                    "full_data": True,
+                },
+            ]
+            last = None
+            for payload in payload_variants:
+                try:
+                    resp = _adjust_request(base, api_token=api_token, method="POST", json_body=payload)
+                    raw_body = resp.get("body", b"") or b""
+                    rows = _parse_adjust_payload(resp.get("content_type", ""), raw_body)
+                    break
+                except Exception as e2:
+                    last = e2
+                    rows = None
+            if rows is None:
+                raise last or e
+        else:
+            raise
+
+    debug = {
+        "content_type": resp.get("content_type", ""),
+        "method": resp.get("method", "GET"),
+        "body_len": len(raw_body) if 'raw_body' in locals() and raw_body is not None else None,
+        "snippet": (raw_body[:200].decode("utf-8", errors="replace") if 'raw_body' in locals() and raw_body is not None else ""),
+        "first_row_keys": [],
+    }
+
+    rows = _flatten_adjust_rows(rows)
+
+    norm = []
+    for r in rows:
+        if isinstance(r, dict):
+            rr = {_norm_key(k): v for k, v in r.items()}
+        else:
+            continue
+        if not debug["first_row_keys"] and rr:
+            debug["first_row_keys"] = list(rr.keys())[:40]
+
+        day = rr.get("day") or rr.get("date")
+        creative = rr.get("creative_network") or rr.get("creative") or rr.get("creative_name")
+        campaign = rr.get("campaign") or rr.get("campaign_name")
+        cost = rr.get("cost") or rr.get("spend") or rr.get("ad_spend")
+        if not day or not creative:
+            continue
+        try:
+            cost_val = float(cost) if cost is not None and cost != "" else 0.0
+        except:
+            cost_val = 0.0
+        norm.append({"day": str(day)[:10], "creative_network": str(creative), "campaign": str(campaign or ""), "cost": cost_val})
+    return norm, debug
 
 
 @app.get("/")
@@ -356,6 +644,144 @@ async def generate_report(request: ReportRequest, user: dict[str, Any] = Depends
         "data": result_list,
         "totals": totals,
         "count": len(result_list)
+    }
+
+
+@app.post("/api/dashboard")
+async def dashboard(req: Request, body: DashboardRequest, user: dict[str, Any] = Depends(get_current_user)):
+    """
+    Dashboard: 3 charts (Google/AppLovin/Mintegral) - top N creatives by spend over period,
+    shown as % of daily spend (100% stacked).
+    Adjust token is provided via X-Adjust-Token header (not stored server-side).
+    """
+    adjust_token = (req.headers.get("X-Adjust-Token") or "").strip()
+    if not adjust_token:
+        raise HTTPException(status_code=400, detail="Missing Adjust token (X-Adjust-Token)")
+    if not body.adjust_app_token:
+        raise HTTPException(status_code=400, detail="Missing adjust_app_token")
+
+    dates = _make_date_range(body.start_date, body.end_date)
+    platform = body.platform or "Android"
+    platform_sub = _platform_substr(platform)
+    platform_kw = _platform_keyword(platform)
+
+    # -------- Google (daily cost by asset_name) --------
+    client = get_client()
+    ga_service = client.get_service("GoogleAdsService")
+    accounts_resp = await get_accounts(user)
+    state_accounts = accounts_resp.get('accounts', [])
+    google_accounts = [a for a in state_accounts if "Spider Fighter Open World" in (a.get("name") or "")]
+
+    if body.adgroup_type == "main":
+        adgroup_filter = "Main"
+    else:
+        adgroup_filter = body.test_date or ""
+
+    google_rows = []
+    for acc in google_accounts:
+        account_id = acc["id"]
+        query = f"""
+            SELECT
+                segments.date,
+                asset.id,
+                asset.name,
+                asset.youtube_video_asset.youtube_video_title,
+                campaign.id,
+                campaign.name,
+                ad_group.name,
+                metrics.cost_micros
+            FROM ad_group_ad_asset_view
+            WHERE
+                asset.type = 'YOUTUBE_VIDEO'
+                AND segments.date BETWEEN '{body.start_date}' AND '{body.end_date}'
+                AND metrics.cost_micros > 0
+                AND ad_group.name LIKE '%{adgroup_filter}%'
+                AND campaign.name LIKE '%{platform_kw}%'
+        """
+        try:
+            response = ga_service.search(customer_id=account_id, query=query)
+            for row in response:
+                asset_name = row.asset.name
+                if not asset_name and hasattr(row.asset, 'youtube_video_asset'):
+                    yt_asset = row.asset.youtube_video_asset
+                    if hasattr(yt_asset, 'youtube_video_title') and yt_asset.youtube_video_title:
+                        asset_name = yt_asset.youtube_video_title
+                if not asset_name:
+                    asset_name = f"Asset_{row.asset.id}"
+                normalized_name = normalize_asset_name(asset_name)
+
+                google_rows.append({
+                    "day": str(row.segments.date),
+                    "creative": normalized_name,
+                    "cost": (row.metrics.cost_micros / 1_000_000) if row.metrics.cost_micros else 0.0
+                })
+        except GoogleAdsException:
+            continue
+
+    google_chart = _build_stacked_100(
+        dates=dates,
+        rows=google_rows,
+        key_field="creative",
+        date_field="day",
+        value_field="cost",
+        top_n=body.top_n
+    )
+
+    # -------- Adjust (AppLovin + Mintegral) --------
+    def build_adjust_channel(channel_id: str):
+        raw, debug = _fetch_adjust_creative_daily_cost(
+            api_token=adjust_token,
+            app_token=body.adjust_app_token,
+            channel_id=channel_id,
+            start_date=body.start_date,
+            end_date=body.end_date,
+            platform=platform
+        )
+        filtered = [r for r in raw if _safe_contains_platform(r.get("campaign", ""), platform_sub)]
+        rows = [{"day": r["day"], "creative_network": normalize_applovin_creative(r["creative_network"]), "cost": r["cost"]} for r in filtered]
+        chart = _build_stacked_100(
+            dates=dates,
+            rows=rows,
+            key_field="creative_network",
+            date_field="day",
+            value_field="cost",
+            top_n=body.top_n
+        )
+        meta = {
+            "raw_rows": len(raw),
+            "filtered_rows": len(filtered),
+            "platform_sub": platform_sub,
+            "channel_id": channel_id,
+            "debug": debug,
+        }
+        return chart, meta
+
+    try:
+        applovin_chart, applovin_meta = build_adjust_channel("partner_7")
+        applovin_error = None
+    except Exception as e:
+        applovin_chart, applovin_meta = {"dates": dates, "series": []}, {"raw_rows": 0, "filtered_rows": 0, "channel_id": "partner_7", "platform_sub": platform_sub}
+        applovin_error = str(e)
+        print(f"[dashboard] Adjust AppLovin error: {applovin_error}")
+
+    try:
+        mintegral_chart, mintegral_meta = build_adjust_channel("partner_369")
+        mintegral_error = None
+    except Exception as e:
+        mintegral_chart, mintegral_meta = {"dates": dates, "series": []}, {"raw_rows": 0, "filtered_rows": 0, "channel_id": "partner_369", "platform_sub": platform_sub}
+        mintegral_error = str(e)
+        print(f"[dashboard] Adjust Mintegral error: {mintegral_error}")
+
+    return {
+        "google": google_chart,
+        "applovin": applovin_chart,
+        "mintegral": mintegral_chart,
+        "meta": {
+            "applovin": applovin_meta,
+            "mintegral": mintegral_meta,
+            "applovin_error": applovin_error,
+            "mintegral_error": mintegral_error,
+        }
     }
 
 
