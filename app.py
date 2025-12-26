@@ -133,7 +133,7 @@ def _make_date_range(start_date: str, end_date: str) -> List[str]:
     return [d.strftime("%Y-%m-%d") for d in dr]
 
 
-def _build_stacked_100(dates: List[str], rows: List[dict], key_field: str, date_field: str, value_field: str, top_n: int):
+def _build_stacked_100(dates: List[str], rows: List[dict], key_field: str, date_field: str, value_field: str, top_n: int, include_cvr: bool = False):
     if not rows:
         return {"dates": dates, "series": []}
     df = pd.DataFrame(rows)
@@ -149,23 +149,40 @@ def _build_stacked_100(dates: List[str], rows: List[dict], key_field: str, date_
 
     totals = df.groupby(key_field)[value_field].sum().sort_values(ascending=False).head(top_n)
     top_keys = list(totals.index)
-    df = df[df[key_field].isin(top_keys)]
+    df_filtered = df[df[key_field].isin(top_keys)]
 
-    pivot = df.pivot_table(index=date_field, columns=key_field, values=value_field, aggfunc="sum", fill_value=0.0)
+    pivot = df_filtered.pivot_table(index=date_field, columns=key_field, values=value_field, aggfunc="sum", fill_value=0.0)
     pivot = pivot.reindex(dates, fill_value=0.0)
 
     daily_total = pivot.sum(axis=1)
     pct = pivot.div(daily_total.replace({0: pd.NA}), axis=0).fillna(0.0) * 100.0
 
+    # Calculate CVR per creative if requested
+    cvr_by_key = {}
+    if include_cvr and "impressions" in df.columns and "installs" in df.columns:
+        df["impressions"] = pd.to_numeric(df["impressions"], errors="coerce").fillna(0)
+        df["installs"] = pd.to_numeric(df["installs"], errors="coerce").fillna(0)
+        agg = df_filtered.groupby(key_field).agg({"impressions": "sum", "installs": "sum"})
+        for k in top_keys:
+            if k in agg.index:
+                imp = agg.loc[k, "impressions"]
+                inst = agg.loc[k, "installs"]
+                cvr_by_key[k] = round((inst / imp * 100) if imp > 0 else 0.0, 3)
+            else:
+                cvr_by_key[k] = 0.0
+
     series = []
     for k in top_keys:
         if k not in pct.columns:
             continue
-        series.append({
+        item = {
             "name": k,
             "dataPct": [float(x) for x in pct[k].values],
             "dataCost": [float(x) for x in pivot[k].values],
-        })
+        }
+        if include_cvr:
+            item["cvr"] = cvr_by_key.get(k, 0.0)
+        series.append(item)
     return {"dates": dates, "series": series}
 
 
@@ -733,7 +750,9 @@ async def dashboard(req: Request, body: DashboardRequest, user: dict[str, Any] =
                 google_rows.append({
                     "day": str(row.segments.date),
                     "creative": normalized_name,
-                    "cost": (row.metrics.cost_micros / 1_000_000) if row.metrics.cost_micros else 0.0
+                    "cost": (row.metrics.cost_micros / 1_000_000) if row.metrics.cost_micros else 0.0,
+                    "impressions": row.metrics.impressions or 0,
+                    "installs": row.metrics.conversions or 0
                 })
                 google_cvr_data.append({
                     "day": str(row.segments.date),
@@ -749,7 +768,8 @@ async def dashboard(req: Request, body: DashboardRequest, user: dict[str, Any] =
         key_field="creative",
         date_field="day",
         value_field="cost",
-        top_n=body.top_n
+        top_n=body.top_n,
+        include_cvr=True
     )
 
     # -------- Build CVR data for Google --------
@@ -778,14 +798,21 @@ async def dashboard(req: Request, body: DashboardRequest, user: dict[str, Any] =
             platform=platform
         )
         filtered = [r for r in raw if _safe_contains_platform(r.get("campaign", ""), platform_sub)]
-        rows = [{"day": r["day"], "creative_network": normalize_applovin_creative(r["creative_network"]), "cost": r["cost"]} for r in filtered]
+        rows = [{
+            "day": r["day"], 
+            "creative_network": normalize_applovin_creative(r["creative_network"]), 
+            "cost": r["cost"],
+            "impressions": r.get("impressions", 0),
+            "installs": r.get("installs", 0)
+        } for r in filtered]
         chart = _build_stacked_100(
             dates=dates,
             rows=rows,
             key_field="creative_network",
             date_field="day",
             value_field="cost",
-            top_n=body.top_n
+            top_n=body.top_n,
+            include_cvr=True
         )
         # CVR data for this channel
         cvr_rows = [{"day": r["day"], "impressions": r.get("impressions", 0), "installs": r.get("installs", 0)} for r in filtered]

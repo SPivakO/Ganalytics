@@ -752,11 +752,12 @@ function renderDashboardCard(key, data, chart, listEl) {
   // Render chart
   chart.setOption(buildStacked100Option(data.dates, data.series), true);
 
-  // Render list with avg % spend and total cost
+  // Render list with avg % spend, total cost and CVR
   const seriesWithAvg = data.series.map(s => {
     const avg = s.dataPct.reduce((a, b) => a + b, 0) / s.dataPct.length;
     const totalCost = s.dataCost.reduce((a, b) => a + b, 0);
-    return { name: s.name, avgPct: avg, totalCost: totalCost };
+    const cvr = s.cvr || 0;
+    return { name: s.name, avgPct: avg, totalCost: totalCost, cvr: cvr };
   }).sort((a, b) => b.avgPct - a.avgPct);
 
   listEl.innerHTML = seriesWithAvg.map((s, idx) => `
@@ -764,6 +765,7 @@ function renderDashboardCard(key, data, chart, listEl) {
       <span class="item-name" title="${escapeHtml(s.name)}">${escapeHtml(s.name)}</span>
       <span class="item-stats">
         <span class="item-cost">$${formatCompactNumber(s.totalCost)}</span>
+        <span class="item-cvr">${s.cvr.toFixed(2)}%</span>
         <span class="item-pct">${s.avgPct.toFixed(1)}%</span>
       </span>
     </div>

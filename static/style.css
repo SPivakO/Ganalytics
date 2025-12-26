@@ -882,7 +882,15 @@ tr:hover {
     font-size: 0.75rem;
     color: var(--accent-orange);
     font-weight: 500;
-    min-width: 45px;
+    min-width: 50px;
+    text-align: right;
+}
+
+.dashboard-list-item .item-cvr {
+    font-size: 0.75rem;
+    color: var(--accent-purple);
+    font-weight: 500;
+    min-width: 50px;
     text-align: right;
 }
 
