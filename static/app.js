@@ -30,7 +30,9 @@ const groupByCampaignCheckbox = document.getElementById('group-by-campaign');
 
 // Dashboard DOM
 const dashPlatformSelect = document.getElementById('dash-platform');
-const adjustAppTokenInput = document.getElementById('adjust-app-token');
+const dashAppSelect = document.getElementById('dash-app');
+const dashAccountsToggle = document.getElementById('dash-accounts-toggle');
+const dashAccountsMenu = document.getElementById('dash-accounts-menu');
 const dashLoadBtn = document.getElementById('dash-load-btn');
 const chartGoogleEl = document.getElementById('chart-google');
 const chartApplovinEl = document.getElementById('chart-applovin');
@@ -41,6 +43,9 @@ const listMintegralEl = document.getElementById('list-mintegral');
 const chartCvrEl = document.getElementById('chart-cvr');
 const dashStartDateInput = document.getElementById('dash-start-date');
 const dashEndDateInput = document.getElementById('dash-end-date');
+
+// Dashboard accounts state
+let dashAccountsLoaded = false;
 
 // Upload DOM
 const uploadAccountsContainer = document.getElementById('upload-accounts-container');
@@ -401,16 +406,91 @@ function hideError(){errorMessage.classList.add('hidden');}
 let _chartGoogle, _chartApplovin, _chartMintegral, _chartCvr;
 
 function initializeDashboardDefaults(){
-  if (adjustAppTokenInput && !adjustAppTokenInput.value) {
-    const savedAppToken = localStorage.getItem('adjust_app_token');
-    adjustAppTokenInput.value = savedAppToken || 'yypucqxkbu9s';
-  }
-  if (adjustAppTokenInput) {
-    adjustAppTokenInput.addEventListener('change', () => {
-      const v = adjustAppTokenInput.value.trim();
-      if (v) localStorage.setItem('adjust_app_token', v);
+  // Load saved app selection
+  if (dashAppSelect) {
+    const savedApp = localStorage.getItem('dash_app_token');
+    if (savedApp) dashAppSelect.value = savedApp;
+    dashAppSelect.addEventListener('change', () => {
+      localStorage.setItem('dash_app_token', dashAppSelect.value);
     });
   }
+
+  // Setup accounts dropdown
+  if (dashAccountsToggle && dashAccountsMenu) {
+    dashAccountsToggle.addEventListener('click', () => {
+      dashAccountsMenu.classList.toggle('hidden');
+      if (!dashAccountsLoaded) {
+        loadDashboardAccounts();
+      }
+    });
+
+    // Close dropdown when clicking outside
+    document.addEventListener('click', (e) => {
+      if (!e.target.closest('#dash-accounts-dropdown')) {
+        dashAccountsMenu.classList.add('hidden');
+      }
+    });
+  }
+}
+
+async function loadDashboardAccounts() {
+  if (dashAccountsLoaded) return;
+  
+  try {
+    const resp = await fetch('/api/accounts');
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.detail || 'Failed to load accounts');
+    
+    dashAccountsLoaded = true;
+    renderDashboardAccounts(data.accounts);
+  } catch (e) {
+    dashAccountsMenu.innerHTML = `<div class="dropdown-loading">Error: ${e.message}</div>`;
+  }
+}
+
+function renderDashboardAccounts(accounts) {
+  dashAccountsMenu.innerHTML = `
+    <div class="dropdown-actions">
+      <button onclick="selectAllDashAccounts(true)">Select All</button>
+      <button onclick="selectAllDashAccounts(false)">Deselect All</button>
+    </div>
+    ${accounts.map(acc => `
+      <label class="dropdown-item">
+        <input type="checkbox" value="${acc.id}" data-name="${escapeHtml(acc.name)}">
+        <span title="${escapeHtml(acc.name)}">${escapeHtml(acc.name)}</span>
+      </label>
+    `).join('')}
+  `;
+
+  // Update toggle text on change
+  dashAccountsMenu.querySelectorAll('input[type="checkbox"]').forEach(cb => {
+    cb.addEventListener('change', updateDashAccountsToggle);
+  });
+}
+
+function selectAllDashAccounts(select) {
+  dashAccountsMenu.querySelectorAll('input[type="checkbox"]').forEach(cb => cb.checked = select);
+  updateDashAccountsToggle();
+}
+
+function updateDashAccountsToggle() {
+  const checked = dashAccountsMenu.querySelectorAll('input[type="checkbox"]:checked');
+  const toggle = dashAccountsToggle.querySelector('.dropdown-placeholder, .dropdown-selected');
+  
+  if (checked.length === 0) {
+    toggle.className = 'dropdown-placeholder';
+    toggle.textContent = 'Select accounts...';
+  } else if (checked.length === 1) {
+    toggle.className = 'dropdown-selected';
+    toggle.textContent = checked[0].dataset.name;
+  } else {
+    toggle.className = 'dropdown-selected';
+    toggle.textContent = `${checked.length} accounts selected`;
+  }
+}
+
+function getSelectedDashAccountIds() {
+  return Array.from(dashAccountsMenu.querySelectorAll('input[type="checkbox"]:checked')).map(cb => cb.value);
 }
 
 function initializeDashboardDates(){
@@ -583,12 +663,12 @@ async function loadDashboard(){
   const sd = dashStartDateInput ? dashStartDateInput.value : '';
   const ed = dashEndDateInput ? dashEndDateInput.value : '';
   const platform = dashPlatformSelect ? dashPlatformSelect.value : 'Android';
-  const adjustAppToken = adjustAppTokenInput ? adjustAppTokenInput.value.trim() : '';
+  const adjustAppToken = dashAppSelect ? dashAppSelect.value : '';
+  const accountIds = getSelectedDashAccountIds();
 
   if(!sd || !ed) return showError('Please select date range');
-  if(!adjustAppToken) return showError('Please enter Adjust App Token');
-
-  localStorage.setItem('adjust_app_token', adjustAppToken);
+  if(!adjustAppToken) return showError('Please select an app');
+  if(!accountIds.length) return showError('Please select at least one account');
 
   hideError(); showLoading();
   ensureCharts();
@@ -612,7 +692,8 @@ async function loadDashboard(){
         start_date: sd,
         end_date: ed,
         platform: platform,
-        adjust_app_token: adjustAppToken
+        adjust_app_token: adjustAppToken,
+        account_ids: accountIds
       })
     });
     const data = await resp.json();

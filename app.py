@@ -98,6 +98,7 @@ class DashboardRequest(BaseModel):
     end_date: str
     platform: str  # "Android" or "iOS"
     adjust_app_token: str
+    account_ids: List[str]  # Selected Google Ads account IDs
     top_n: int = 10
 
 
@@ -685,9 +686,9 @@ async def dashboard(req: Request, body: DashboardRequest, user: dict[str, Any] =
     # -------- Google (daily cost by asset_name) --------
     client = get_client()
     ga_service = client.get_service("GoogleAdsService")
-    accounts_resp = await get_accounts(user)
-    state_accounts = accounts_resp.get('accounts', [])
-    google_accounts = [a for a in state_accounts if "Spider Fighter Open World" in (a.get("name") or "")]
+    
+    # Use selected account IDs from request
+    google_account_ids = body.account_ids
 
     if body.adgroup_type == "main":
         adgroup_filter = "Main"
@@ -696,8 +697,7 @@ async def dashboard(req: Request, body: DashboardRequest, user: dict[str, Any] =
 
     google_rows = []
     google_cvr_data = []  # For CVR chart: impressions and conversions by day
-    for acc in google_accounts:
-        account_id = acc["id"]
+    for account_id in google_account_ids:
         query = f"""
             SELECT
                 segments.date,

@@ -223,28 +223,37 @@ Shoot web, hook, swing, throw enemies and fight in the air like real Spider-man<
                         </div>
                     </div>
                     <div class="filter-group">
-                        <label>Platform (by campaign name)</label>
+                        <label>Platform</label>
                         <select id="dash-platform" class="text-input">
                             <option value="Android" selected>Android</option>
                             <option value="iOS">iOS</option>
                         </select>
                     </div>
                     <div class="filter-group">
-                        <label>Adjust App Token</label>
-                        <input type="text" id="adjust-app-token" class="text-input" placeholder="e.g. yypucqxkbu9s">
+                        <label>Google Ads Accounts</label>
+                        <div class="dropdown-multiselect" id="dash-accounts-dropdown">
+                            <div class="dropdown-toggle" id="dash-accounts-toggle">
+                                <span class="dropdown-placeholder">Select accounts...</span>
+                                <span class="dropdown-arrow">▼</span>
+                            </div>
+                            <div class="dropdown-menu hidden" id="dash-accounts-menu">
+                                <div class="dropdown-loading">Loading accounts...</div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="filter-group">
+                        <label>App (Adjust)</label>
+                        <select id="dash-app" class="text-input">
+                            <option value="yypucqxkbu9s" selected>Spider OW</option>
+                            <option value="fh5kbuwv8f7k">Cars Royale</option>
+                            <option value="cwzj9drvxa0w">Gangs Fighter</option>
+                        </select>
                     </div>
                     <div class="filter-group actions">
                         <button id="dash-load-btn" class="btn-primary">
                             <span class="btn-icon">🔄</span>
                             Load Dashboard
                         </button>
-                    </div>
-                </div>
-                <div class="filter-row">
-                    <div class="filter-group full-width">
-                        <div class="placeholder">
-                            Google data is automatically limited to accounts containing: <strong>Spider Fighter Open World</strong>
-                        </div>
                     </div>
                 </div>
             </div>
