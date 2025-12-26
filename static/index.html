@@ -12,8 +12,8 @@
     <div class="container">
         <header style="display: flex; justify-content: space-between; align-items: center;">
             <div>
-                <h1>📊 Google Ads Manager</h1>
-                <p class="subtitle">YouTube Assets Analytics & Upload</p>
+                <h1>📊 Creative Management</h1>
+                <p class="subtitle">Assets Analytics & Upload</p>
             </div>
             <a href="/api/auth/logout" class="btn-secondary" style="text-decoration: none; font-size: 0.9rem;">Logout</a>
         </header>
@@ -22,15 +22,15 @@
         <nav class="tabs">
             <button class="tab-btn active" data-tab="reports">
                 <span class="tab-icon">📈</span>
-                Reports
+                Google Ads Report
             </button>
             <button class="tab-btn" data-tab="upload">
                 <span class="tab-icon">🎬</span>
-                Upload Test
+                Google Ads Upload Test
             </button>
             <button class="tab-btn" data-tab="dashboard">
                 <span class="tab-icon">📊</span>
-                Dashboard
+                Channels Dashboard
             </button>
         </nav>
 
@@ -60,7 +60,7 @@
                             <label class="radio-label">
                                 <input type="radio" name="adgroup_type" value="main" checked>
                                 <span class="radio-custom"></span>
-                                Main (Production)
+                                Main
                             </label>
                             <label class="radio-label">
                                 <input type="radio" name="adgroup_type" value="test">
@@ -157,7 +157,7 @@
                     </div>
 
                     <div class="filter-group">
-                        <label>Campaigns (will create ad group in each)</label>
+                        <label>Campaigns</label>
                         <div class="multi-select" id="upload-campaigns-container">
                             <div class="placeholder">Select accounts first</div>
                         </div>
@@ -257,13 +257,13 @@ Shoot web, hook, swing, throw enemies and fight in the air like real Spider-man<
             </div>
 
             <div class="dashboard-card dashboard-cvr-card">
-                <div class="dashboard-title">CVR by Channel (Installs / Impressions)</div>
+                <div class="dashboard-title">CVR by Channel</div>
                 <div id="chart-cvr" class="dashboard-chart-cvr"></div>
             </div>
 
             <div class="dashboard-grid">
                 <div class="dashboard-card">
-                    <div class="dashboard-title">Google (Top 10 creatives, % of daily spend)</div>
+                    <div class="dashboard-title">Google Ads</div>
                     <div class="dashboard-split">
                         <div class="dashboard-list" id="list-google"></div>
                         <div class="dashboard-chart-wrap">
@@ -272,7 +272,7 @@ Shoot web, hook, swing, throw enemies and fight in the air like real Spider-man<
                     </div>
                 </div>
                 <div class="dashboard-card">
-                    <div class="dashboard-title">AppLovin (Adjust) (Top 10 creatives, % of daily spend)</div>
+                    <div class="dashboard-title">AppLovin</div>
                     <div class="dashboard-split">
                         <div class="dashboard-list" id="list-applovin"></div>
                         <div class="dashboard-chart-wrap">
@@ -281,7 +281,7 @@ Shoot web, hook, swing, throw enemies and fight in the air like real Spider-man<
                     </div>
                 </div>
                 <div class="dashboard-card">
-                    <div class="dashboard-title">Mintegral (Adjust) (Top 10 creatives, % of daily spend)</div>
+                    <div class="dashboard-title">Mintegral</div>
                     <div class="dashboard-split">
                         <div class="dashboard-list" id="list-mintegral"></div>
                         <div class="dashboard-chart-wrap">
@@ -295,7 +295,7 @@ Shoot web, hook, swing, throw enemies and fight in the air like real Spider-man<
 
         <div id="loading-overlay" class="loading-overlay hidden">
             <div class="spinner"></div>
-            <p>Loading data from Google Ads...</p>
+            <p>Loading data...</p>
         </div>
 
         <div id="error-message" class="error-message hidden"></div>
