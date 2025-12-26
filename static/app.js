@@ -41,11 +41,11 @@ const listGoogleEl = document.getElementById('list-google');
 const listApplovinEl = document.getElementById('list-applovin');
 const listMintegralEl = document.getElementById('list-mintegral');
 const chartCvrEl = document.getElementById('chart-cvr');
-const dashStartDateInput = document.getElementById('dash-start-date');
-const dashEndDateInput = document.getElementById('dash-end-date');
+const dashDateRangeInput = document.getElementById('dash-date-range');
 
 // Dashboard accounts state
 let dashAccountsLoaded = false;
+let dashDatePicker = null;
 
 // Upload DOM
 const uploadAccountsContainer = document.getElementById('upload-accounts-container');
@@ -494,12 +494,21 @@ function getSelectedDashAccountIds() {
 }
 
 function initializeDashboardDates(){
-  if (!dashStartDateInput || !dashEndDateInput) return;
+  if (!dashDateRangeInput || !window.flatpickr) return;
+  
   const now = new Date();
   const firstDay = new Date(now.getFullYear(), now.getMonth(), 1);
   const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0);
-  dashStartDateInput.value = formatDate(firstDay);
-  dashEndDateInput.value = formatDate(lastDay);
+  
+  dashDatePicker = flatpickr(dashDateRangeInput, {
+    mode: 'range',
+    dateFormat: 'Y-m-d',
+    defaultDate: [firstDay, lastDay],
+    theme: 'dark',
+    locale: {
+      rangeSeparator: ' — '
+    }
+  });
 }
 
 function ensureCharts(){
@@ -660,8 +669,13 @@ let _dashboardData = { google: null, applovin: null, mintegral: null };
 let _selectedSeries = { google: null, applovin: null, mintegral: null };
 
 async function loadDashboard(){
-  const sd = dashStartDateInput ? dashStartDateInput.value : '';
-  const ed = dashEndDateInput ? dashEndDateInput.value : '';
+  // Get dates from flatpickr
+  let sd = '', ed = '';
+  if (dashDatePicker && dashDatePicker.selectedDates.length === 2) {
+    sd = formatDate(dashDatePicker.selectedDates[0]);
+    ed = formatDate(dashDatePicker.selectedDates[1]);
+  }
+  
   const platform = dashPlatformSelect ? dashPlatformSelect.value : 'Android';
   const adjustAppToken = dashAppSelect ? dashAppSelect.value : '';
   const accountIds = getSelectedDashAccountIds();

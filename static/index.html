@@ -4,6 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Google Ads Manager</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.css">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/themes/dark.css">
     <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
@@ -216,11 +218,7 @@ Shoot web, hook, swing, throw enemies and fight in the air like real Spider-man<
                 <div class="filter-row">
                     <div class="filter-group dates">
                         <label>Date Range</label>
-                        <div class="date-inputs">
-                            <input type="date" id="dash-start-date" value="">
-                            <span class="date-separator">—</span>
-                            <input type="date" id="dash-end-date" value="">
-                        </div>
+                        <input type="text" id="dash-date-range" class="text-input date-range-input" placeholder="Select date range...">
                     </div>
                     <div class="filter-group">
                         <label>Platform</label>
@@ -304,6 +302,7 @@ Shoot web, hook, swing, throw enemies and fight in the air like real Spider-man<
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
     <script src="/static/app.js"></script>
 </body>
 </html>
