@@ -143,6 +143,11 @@ def _build_stacked_100(dates: List[str], rows: List[dict], key_field: str, date_
     df[value_field] = pd.to_numeric(df[value_field], errors="coerce").fillna(0.0)
     df[date_field] = df[date_field].astype(str)
     df[key_field] = df[key_field].fillna("").astype(str)
+    # Convert impressions/installs early for CVR calculation
+    if "impressions" in df.columns:
+        df["impressions"] = pd.to_numeric(df["impressions"], errors="coerce").fillna(0)
+    if "installs" in df.columns:
+        df["installs"] = pd.to_numeric(df["installs"], errors="coerce").fillna(0)
     df = df[(df[key_field] != "") & (df[value_field] > 0)]
     if df.empty:
         return {"dates": dates, "series": []}
@@ -160,8 +165,6 @@ def _build_stacked_100(dates: List[str], rows: List[dict], key_field: str, date_
     # Calculate CVR per creative if requested
     cvr_by_key = {}
     if include_cvr and "impressions" in df.columns and "installs" in df.columns:
-        df["impressions"] = pd.to_numeric(df["impressions"], errors="coerce").fillna(0)
-        df["installs"] = pd.to_numeric(df["installs"], errors="coerce").fillna(0)
         agg = df_filtered.groupby(key_field).agg({"impressions": "sum", "installs": "sum"})
         for k in top_keys:
             if k in agg.index:
