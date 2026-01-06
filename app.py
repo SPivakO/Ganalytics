@@ -128,10 +128,14 @@ class DashboardRequest(BaseModel):
 
 
 def normalize_applovin_creative(name: str) -> str:
-    """Remove Applovin hash prefix (MD5 hash only)"""
+    """Remove Applovin hash prefix (MD5 hash) and campaign prefixes like iec_004_van_"""
     if not name:
         return name
+    # Remove MD5 hash prefix (32 hex chars + underscore)
     normalized = re.sub(r'^[a-f0-9]{32}_', '', name, flags=re.IGNORECASE)
+    # Remove campaign prefixes: iec_XXX_word_
+    # Examples: iec_004_van_, iec_003-02_jump_, iec_005_jump_
+    normalized = re.sub(r'^iec_[\d-]+_[a-z]+_', '', normalized, flags=re.IGNORECASE)
     return normalized
 
 
