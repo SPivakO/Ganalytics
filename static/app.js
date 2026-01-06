@@ -30,6 +30,7 @@ const groupByCampaignCheckbox = document.getElementById('group-by-campaign');
 
 // Dashboard DOM
 const dashPlatformSelect = document.getElementById('dash-platform');
+const dashGroupBySelect = document.getElementById('dash-group-by');
 const dashAppSelect = document.getElementById('dash-app');
 const dashAccountsToggle = document.getElementById('dash-accounts-toggle');
 const dashAccountsMenu = document.getElementById('dash-accounts-menu');
@@ -571,7 +572,24 @@ function buildCvrLineChart(dates, cvrData) {
     xAxis: {
       type: 'category',
       data: dates,
-      axisLabel: { color: '#8b949e', fontSize: 10 }
+      axisLabel: { 
+        color: '#8b949e', 
+        fontSize: 10,
+        rotate: dates.some(d => d.includes(' - ')) ? 45 : 0,
+        interval: 0,
+        formatter: (value) => {
+          if (value.includes(' - ')) {
+            const [start, end] = value.split(' - ');
+            const startDate = new Date(start);
+            const endDate = new Date(end);
+            if (startDate.getMonth() === endDate.getMonth()) {
+              return `${startDate.getDate()}-${endDate.getDate()} ${startDate.toLocaleDateString('en-US', { month: 'short' })}`;
+            }
+            return `${startDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} - ${endDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`;
+          }
+          return value;
+        }
+      }
     },
     yAxis: {
       type: 'value',
@@ -630,7 +648,24 @@ function buildStacked100Option(dates, series){
     xAxis: {
       type: 'category',
       data: dates,
-      axisLabel: { color: '#8b949e', fontSize: 11 }
+      axisLabel: { 
+        color: '#8b949e', 
+        fontSize: 11,
+        rotate: dates.some(d => d.includes(' - ')) ? 45 : 0,
+        interval: 0,
+        formatter: (value) => {
+          if (value.includes(' - ')) {
+            const [start, end] = value.split(' - ');
+            const startDate = new Date(start);
+            const endDate = new Date(end);
+            if (startDate.getMonth() === endDate.getMonth()) {
+              return `${startDate.getDate()}-${endDate.getDate()} ${startDate.toLocaleDateString('en-US', { month: 'short' })}`;
+            }
+            return `${startDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} - ${endDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`;
+          }
+          return value;
+        }
+      }
     },
     yAxis: {
       type: 'value',
@@ -677,6 +712,7 @@ async function loadDashboard(){
   }
   
   const platform = dashPlatformSelect ? dashPlatformSelect.value : 'Android';
+  const groupBy = dashGroupBySelect ? dashGroupBySelect.value : 'day';
   const adjustAppToken = dashAppSelect ? dashAppSelect.value : '';
   const accountIds = getSelectedDashAccountIds();
 
@@ -707,7 +743,8 @@ async function loadDashboard(){
         end_date: ed,
         platform: platform,
         adjust_app_token: adjustAppToken,
-        account_ids: accountIds
+        account_ids: accountIds,
+        group_by: groupBy
       })
     });
     const data = await resp.json();
