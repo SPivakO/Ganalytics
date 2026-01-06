@@ -18,6 +18,8 @@ from urllib import request as urlrequest
 from urllib import parse as urlparse
 from urllib.error import HTTPError, URLError
 from datetime import datetime, timedelta
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 
 load_dotenv()
 
@@ -294,7 +296,7 @@ def _adjust_request(url: str, api_token: str, method: str = "GET", json_body: Op
             if data is not None:
                 h["Content-Type"] = "application/json"
             req = urlrequest.Request(url, headers=h, method=method, data=data)
-            with urlrequest.urlopen(req, timeout=60) as resp:
+            with urlrequest.urlopen(req, timeout=180) as resp:  # Increased timeout for large date ranges
                 content_type = resp.headers.get("Content-Type", "")
                 body = resp.read()
                 return {"status": getattr(resp, "status", 200), "content_type": content_type, "body": body, "method": method}
@@ -814,7 +816,6 @@ async def dashboard(req: Request, body: DashboardRequest, user: dict[str, Any] =
 
     # -------- Google (daily cost by asset_name) --------
     client = get_client()
-    ga_service = client.get_service("GoogleAdsService")
     
     # Use selected account IDs from request
     google_account_ids = body.account_ids
@@ -824,9 +825,11 @@ async def dashboard(req: Request, body: DashboardRequest, user: dict[str, Any] =
     else:
         adgroup_filter = body.test_date or ""
 
-    google_rows = []
-    google_cvr_data = []  # For CVR chart: impressions and conversions by day
-    for account_id in google_account_ids:
+    # Fetch Google Ads data in parallel for better performance
+    def fetch_google_account_data(account_id: str):
+        """Fetch data for a single account"""
+        rows = []
+        cvr_data = []
         query = f"""
             SELECT
                 segments.date,
@@ -848,7 +851,7 @@ async def dashboard(req: Request, body: DashboardRequest, user: dict[str, Any] =
                 AND campaign.name LIKE '%{platform_kw}%'
         """
         try:
-            # Use search_stream for better memory efficiency with large datasets
+            ga_service = client.get_service("GoogleAdsService")
             response = ga_service.search_stream(customer_id=account_id, query=query)
             for batch in response:
                 for row in batch.results:
@@ -861,20 +864,34 @@ async def dashboard(req: Request, body: DashboardRequest, user: dict[str, Any] =
                         asset_name = f"Asset_{row.asset.id}"
                     normalized_name = normalize_asset_name(asset_name)
 
-                    google_rows.append({
+                    rows.append({
                         "day": str(row.segments.date),
                         "creative": normalized_name,
                         "cost": (row.metrics.cost_micros / 1_000_000) if row.metrics.cost_micros else 0.0,
                         "impressions": row.metrics.impressions or 0,
                         "installs": row.metrics.conversions or 0
                     })
-                    google_cvr_data.append({
+                    cvr_data.append({
                         "day": str(row.segments.date),
                         "impressions": row.metrics.impressions or 0,
                         "installs": row.metrics.conversions or 0
                     })
         except GoogleAdsException:
-            continue
+            pass
+        return rows, cvr_data
+
+    # Fetch all accounts in parallel
+    google_rows = []
+    google_cvr_data = []
+    if google_account_ids:
+        loop = asyncio.get_event_loop()
+        with ThreadPoolExecutor(max_workers=min(len(google_account_ids), 5)) as executor:
+            futures = [loop.run_in_executor(executor, fetch_google_account_data, acc_id) 
+                      for acc_id in google_account_ids]
+            results = await asyncio.gather(*futures)
+            for rows, cvr_data in results:
+                google_rows.extend(rows)
+                google_cvr_data.extend(cvr_data)
 
     google_chart = _build_stacked_100(
         dates=dates,
@@ -954,21 +971,28 @@ async def dashboard(req: Request, body: DashboardRequest, user: dict[str, Any] =
         }
         return chart, cvr, meta
 
-    try:
-        applovin_chart, applovin_cvr, applovin_meta = build_adjust_channel("partner_7")
-        applovin_error = None
-    except Exception as e:
-        applovin_chart, applovin_cvr, applovin_meta = {"dates": dates, "series": []}, [0.0] * len(dates), {"raw_rows": 0, "filtered_rows": 0, "channel_id": "partner_7", "platform_sub": platform_sub}
-        applovin_error = str(e)
-        print(f"[dashboard] Adjust AppLovin error: {applovin_error}")
+    # Fetch Adjust data in parallel
+    def fetch_adjust_channel(channel_id: str):
+        try:
+            return build_adjust_channel(channel_id), None
+        except Exception as e:
+            error_msg = str(e)
+            print(f"[dashboard] Adjust {channel_id} error: {error_msg}")
+            return (
+                {"dates": dates, "series": []}, 
+                [0.0] * len(dates), 
+                {"raw_rows": 0, "filtered_rows": 0, "channel_id": channel_id, "platform_sub": platform_sub}
+            ), error_msg
 
-    try:
-        mintegral_chart, mintegral_cvr, mintegral_meta = build_adjust_channel("partner_369")
-        mintegral_error = None
-    except Exception as e:
-        mintegral_chart, mintegral_cvr, mintegral_meta = {"dates": dates, "series": []}, [0.0] * len(dates), {"raw_rows": 0, "filtered_rows": 0, "channel_id": "partner_369", "platform_sub": platform_sub}
-        mintegral_error = str(e)
-        print(f"[dashboard] Adjust Mintegral error: {mintegral_error}")
+    # Execute Adjust requests in parallel
+    loop = asyncio.get_event_loop()
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        applovin_future = loop.run_in_executor(executor, fetch_adjust_channel, "partner_7")
+        mintegral_future = loop.run_in_executor(executor, fetch_adjust_channel, "partner_369")
+        applovin_result, mintegral_result = await asyncio.gather(applovin_future, mintegral_future)
+    
+    (applovin_chart, applovin_cvr, applovin_meta), applovin_error = applovin_result
+    (mintegral_chart, mintegral_cvr, mintegral_meta), mintegral_error = mintegral_result
 
     return {
         "google": google_chart,
@@ -1322,5 +1346,11 @@ def create_adgroup_with_videos(client, customer_id, campaign_id, adgroup_name, v
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(
+        app, 
+        host="0.0.0.0", 
+        port=8000,
+        timeout_keep_alive=300,  # 5 minutes keep-alive timeout
+        timeout_graceful_shutdown=600  # 10 minutes graceful shutdown
+    )
 
