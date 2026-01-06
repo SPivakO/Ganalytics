@@ -575,7 +575,8 @@ async def get_campaigns(account_ids: str, start_date: str, end_date: str, user: 
     account_list = account_ids.split(',')
     all_campaigns = []
     
-    # Query campaigns with spend in the date range
+    # Optimized query: don't include segments.date in SELECT to get aggregated data
+    # This significantly reduces response size and improves performance for large date ranges
     query = f"""
         SELECT
             campaign.id,
@@ -589,19 +590,22 @@ async def get_campaigns(account_ids: str, start_date: str, end_date: str, user: 
     
     for account_id in account_list:
         try:
-            response = ga_service.search(customer_id=account_id.strip(), query=query)
+            # Use search_stream for better performance with potentially large result sets
+            response = ga_service.search_stream(customer_id=account_id.strip(), query=query)
             seen_campaigns = set()
-            for row in response:
-                campaign_key = f"{account_id}_{row.campaign.id}"
-                if campaign_key not in seen_campaigns:
-                    seen_campaigns.add(campaign_key)
-                    all_campaigns.append({
-                        'id': campaign_key,
-                        'campaign_id': str(row.campaign.id),
-                        'account_id': account_id,
-                        'name': row.campaign.name
-                    })
-        except:
+            for batch in response:
+                for row in batch.results:
+                    campaign_key = f"{account_id}_{row.campaign.id}"
+                    if campaign_key not in seen_campaigns:
+                        seen_campaigns.add(campaign_key)
+                        all_campaigns.append({
+                            'id': campaign_key,
+                            'campaign_id': str(row.campaign.id),
+                            'account_id': account_id,
+                            'name': row.campaign.name
+                        })
+        except Exception as e:
+            print(f"[get_campaigns] Error for account {account_id}: {e}")
             continue
     
     # Remove duplicates by name and sort
