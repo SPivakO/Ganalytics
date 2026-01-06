@@ -133,9 +133,9 @@ def normalize_applovin_creative(name: str) -> str:
         return name
     # Remove MD5 hash prefix (32 hex chars + underscore)
     normalized = re.sub(r'^[a-f0-9]{32}_', '', name, flags=re.IGNORECASE)
-    # Remove campaign prefixes: iec_XXX_word_
-    # Examples: iec_004_van_, iec_003-02_jump_, iec_005_jump_
-    normalized = re.sub(r'^iec_[\d-]+_[a-z]+_', '', normalized, flags=re.IGNORECASE)
+    # Remove campaign prefixes: iec_XXX_ or iec_XXX_word_
+    # Examples: iec_004_van_, iec_003-02_jump_, iec_009-02_, iec_006-ease_
+    normalized = re.sub(r'^iec_[\da-z-]+_(?:[a-z]+_)?', '', normalized, flags=re.IGNORECASE)
     return normalized
 
 
