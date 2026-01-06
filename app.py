@@ -801,7 +801,9 @@ async def dashboard(req: Request, body: DashboardRequest, user: dict[str, Any] =
         raise HTTPException(status_code=400, detail="Missing adjust_app_token")
 
     group_by = body.group_by or "day"
+    print(f"[dashboard] group_by received: '{group_by}', start: {body.start_date}, end: {body.end_date}")
     dates = _make_date_range(body.start_date, body.end_date, group_by)
+    print(f"[dashboard] dates generated: {len(dates)} periods, first: {dates[0] if dates else 'none'}")
     platform = body.platform or "Android"
     platform_sub = _platform_substr(platform)
     platform_kw = _platform_keyword(platform)
@@ -975,6 +977,8 @@ async def dashboard(req: Request, body: DashboardRequest, user: dict[str, Any] =
             "mintegral": mintegral_cvr
         },
         "meta": {
+            "group_by": group_by,
+            "dates_count": len(dates),
             "applovin": applovin_meta,
             "mintegral": mintegral_meta,
             "applovin_error": applovin_error,
