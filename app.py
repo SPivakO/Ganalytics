@@ -17,6 +17,7 @@ import io
 from urllib import request as urlrequest
 from urllib import parse as urlparse
 from urllib.error import HTTPError, URLError
+from datetime import datetime, timedelta
 
 load_dotenv()
 
@@ -68,6 +69,29 @@ def get_client():
     return _client
 
 
+def validate_date_range(start_date: str, end_date: str, max_months: int = 3) -> None:
+    """Validate date range doesn't exceed maximum months"""
+    try:
+        start = pd.to_datetime(start_date)
+        end = pd.to_datetime(end_date)
+        if end < start:
+            raise HTTPException(status_code=400, detail="End date must be after start date")
+        
+        # Calculate months difference
+        months_diff = (end.year - start.year) * 12 + (end.month - start.month)
+        # Add 1 if end day >= start day (to account for partial months)
+        if end.day >= start.day:
+            months_diff += 1
+        
+        if months_diff > max_months:
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Date range exceeds maximum of {max_months} months. Please select a shorter period."
+            )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid date format: {e}")
+
+
 def normalize_asset_name(name: str) -> str:
     """Remove format suffixes like 9x16, 1x1, 16x9 from asset name"""
     # Remove common format patterns
@@ -100,6 +124,7 @@ class DashboardRequest(BaseModel):
     adjust_app_token: str
     account_ids: List[str]  # Selected Google Ads account IDs
     top_n: int = 10
+    group_by: str = "day"  # "day", "week", or "month"
 
 
 def normalize_applovin_creative(name: str) -> str:
@@ -128,12 +153,65 @@ def _safe_contains_platform(name: str, platform: str) -> bool:
     return _platform_substr(platform) in name.lower()
 
 
-def _make_date_range(start_date: str, end_date: str) -> List[str]:
-    dr = pd.date_range(start=start_date, end=end_date, freq="D")
-    return [d.strftime("%Y-%m-%d") for d in dr]
+def _make_date_range(start_date: str, end_date: str, group_by: str = "day") -> List[str]:
+    """Generate date range based on grouping type"""
+    if group_by == "week":
+        # Generate weekly periods (Monday to Sunday)
+        start = pd.to_datetime(start_date)
+        end = pd.to_datetime(end_date)
+        # Find first Monday on or before start date
+        days_since_monday = start.weekday()
+        week_start = start - pd.Timedelta(days=days_since_monday)
+        periods = []
+        current = week_start
+        while current <= end:
+            week_end = current + pd.Timedelta(days=6)
+            if week_end > end:
+                week_end = end
+            if current <= end:
+                periods.append(f"{current.strftime('%Y-%m-%d')} - {week_end.strftime('%Y-%m-%d')}")
+            current += pd.Timedelta(days=7)
+        return periods
+    elif group_by == "month":
+        # Generate monthly periods
+        start = pd.to_datetime(start_date)
+        end = pd.to_datetime(end_date)
+        periods = []
+        current = start.replace(day=1)
+        while current <= end:
+            month_end = current + pd.offsets.MonthEnd(0)
+            if month_end > end:
+                month_end = end
+            if current <= end:
+                periods.append(f"{current.strftime('%Y-%m-%d')} - {month_end.strftime('%Y-%m-%d')}")
+            # Move to next month
+            current = month_end + pd.Timedelta(days=1)
+            current = current.replace(day=1)
+        return periods
+    else:
+        # Daily (default)
+        dr = pd.date_range(start=start_date, end=end_date, freq="D")
+        return [d.strftime("%Y-%m-%d") for d in dr]
 
 
-def _build_stacked_100(dates: List[str], rows: List[dict], key_field: str, date_field: str, value_field: str, top_n: int, include_cvr: bool = False):
+def _get_period_for_date(date_str: str, group_by: str, start_date: str, end_date: str) -> str:
+    """Get period label for a given date based on grouping type"""
+    date = pd.to_datetime(date_str)
+    if group_by == "week":
+        # Find Monday of the week
+        days_since_monday = date.weekday()
+        week_start = date - pd.Timedelta(days=days_since_monday)
+        week_end = week_start + pd.Timedelta(days=6)
+        return f"{week_start.strftime('%Y-%m-%d')} - {week_end.strftime('%Y-%m-%d')}"
+    elif group_by == "month":
+        month_start = date.replace(day=1)
+        month_end = (month_start + pd.offsets.MonthEnd(0))
+        return f"{month_start.strftime('%Y-%m-%d')} - {month_end.strftime('%Y-%m-%d')}"
+    else:
+        return date_str
+
+
+def _build_stacked_100(dates: List[str], rows: List[dict], key_field: str, date_field: str, value_field: str, top_n: int, include_cvr: bool = False, group_by: str = "day", start_date: str = None, end_date: str = None):
     if not rows:
         return {"dates": dates, "series": []}
     df = pd.DataFrame(rows)
@@ -141,7 +219,7 @@ def _build_stacked_100(dates: List[str], rows: List[dict], key_field: str, date_
         return {"dates": dates, "series": []}
 
     df[value_field] = pd.to_numeric(df[value_field], errors="coerce").fillna(0.0)
-    df[date_field] = df[date_field].astype(str)
+    df[date_field] = pd.to_datetime(df[date_field])
     df[key_field] = df[key_field].fillna("").astype(str)
     # Convert impressions/installs early for CVR calculation
     if "impressions" in df.columns:
@@ -152,24 +230,32 @@ def _build_stacked_100(dates: List[str], rows: List[dict], key_field: str, date_
     if df.empty:
         return {"dates": dates, "series": []}
 
+    # Group by period if needed
+    if group_by != "day" and start_date and end_date:
+        df["period"] = df[date_field].apply(lambda d: _get_period_for_date(d.strftime("%Y-%m-%d"), group_by, start_date, end_date))
+        period_field = "period"
+    else:
+        df["period"] = df[date_field].dt.strftime("%Y-%m-%d")
+        period_field = "period"
+
     totals = df.groupby(key_field)[value_field].sum().sort_values(ascending=False).head(top_n)
     top_keys = list(totals.index)
     df_filtered = df[df[key_field].isin(top_keys)]
 
-    pivot = df_filtered.pivot_table(index=date_field, columns=key_field, values=value_field, aggfunc="sum", fill_value=0.0)
+    pivot = df_filtered.pivot_table(index=period_field, columns=key_field, values=value_field, aggfunc="sum", fill_value=0.0)
     pivot = pivot.reindex(dates, fill_value=0.0)
 
-    daily_total = pivot.sum(axis=1)
-    pct = pivot.div(daily_total.replace({0: pd.NA}), axis=0).fillna(0.0) * 100.0
+    period_total = pivot.sum(axis=1)
+    pct = pivot.div(period_total.replace({0: pd.NA}), axis=0).fillna(0.0) * 100.0
 
     # Calculate CVR per creative if requested
     cvr_by_key = {}
-    if include_cvr and "impressions" in df.columns and "installs" in df.columns:
+    if include_cvr and "impressions" in df_filtered.columns and "installs" in df_filtered.columns:
         agg = df_filtered.groupby(key_field).agg({"impressions": "sum", "installs": "sum"})
         for k in top_keys:
             if k in agg.index:
-                imp = agg.loc[k, "impressions"]
-                inst = agg.loc[k, "installs"]
+                imp = float(agg.loc[k, "impressions"])
+                inst = float(agg.loc[k, "installs"])
                 cvr_by_key[k] = round((inst / imp * 100) if imp > 0 else 0.0, 3)
             else:
                 cvr_by_key[k] = 0.0
@@ -326,7 +412,7 @@ def _fetch_adjust_creative_daily_cost(api_token: str, app_token: str, channel_id
                     "channel_id__in": f"\"{channel_id}\"",
                     "index": "day",
                     "dimensions": "creative_network,campaign",
-                    "metrics": "cost",
+                    "metrics": "cost,installs,network_impressions",
                     "date_period": date_period,
                     "format_dates": False,
                     "full_data": True,
@@ -335,7 +421,7 @@ def _fetch_adjust_creative_daily_cost(api_token: str, app_token: str, channel_id
                 {
                     "index": "day",
                     "dimensions": ["creative_network", "campaign"],
-                    "metrics": ["cost"],
+                    "metrics": ["cost", "installs", "network_impressions"],
                     "date_period": date_period,
                     "filters": {
                         "app_token__in": [app_token],
@@ -530,6 +616,9 @@ async def get_campaigns(account_ids: str, start_date: str, end_date: str, user: 
 @app.post("/api/report")
 async def generate_report(request: ReportRequest, user: dict[str, Any] = Depends(get_current_user)):
     """Generate report with filters"""
+    # Validate date range (max 3 months)
+    validate_date_range(request.start_date, request.end_date, max_months=3)
+    
     client = get_client()
     ga_service = client.get_service("GoogleAdsService")
     
@@ -554,7 +643,7 @@ async def generate_report(request: ReportRequest, user: dict[str, Any] = Depends
     all_results = []
     
     for account_id in request.account_ids:
-        # Get campaign names for this account from selected campaign_ids
+        # Get campaign IDs for this account from selected campaign_ids
         account_campaigns = [c.split('_', 1)[1] if '_' in c else c 
                            for c in request.campaign_ids 
                            if c.startswith(account_id)]
@@ -563,6 +652,15 @@ async def generate_report(request: ReportRequest, user: dict[str, Any] = Depends
             # Check if any campaign_ids match this account
             continue
         
+        # Build campaign filter for SQL query
+        campaign_filter = ""
+        if account_campaigns:
+            campaign_ids_str = ",".join([f"'{cid}'" for cid in account_campaigns])
+            campaign_filter = f"AND campaign.id IN ({campaign_ids_str})"
+        
+        # Optimized query: removed segments.date from SELECT (aggregate over entire period)
+        # This reduces data volume by 30-90x (depending on period length)
+        # Google Ads API automatically aggregates when segments.date is not in SELECT
         query = f"""
             SELECT
                 asset.id,
@@ -581,48 +679,45 @@ async def generate_report(request: ReportRequest, user: dict[str, Any] = Depends
                 AND segments.date BETWEEN '{request.start_date}' AND '{request.end_date}'
                 AND metrics.impressions > 0
                 AND ad_group.name LIKE '%{adgroup_filter}%'
+                {campaign_filter}
         """
         
         try:
-            response = ga_service.search(customer_id=account_id, query=query)
+            # Use search_stream for better memory efficiency
+            response = ga_service.search_stream(customer_id=account_id, query=query)
             
-            for row in response:
-                # Filter by campaign if specified
-                if request.campaign_ids:
-                    campaign_key = f"{account_id}_{row.campaign.id}"
-                    if campaign_key not in request.campaign_ids:
-                        continue
-                
-                # Get asset name
-                asset_name = row.asset.name
-                if not asset_name and hasattr(row.asset, 'youtube_video_asset'):
-                    yt_asset = row.asset.youtube_video_asset
-                    if hasattr(yt_asset, 'youtube_video_title') and yt_asset.youtube_video_title:
-                        asset_name = yt_asset.youtube_video_title
-                if not asset_name:
-                    asset_name = f"Asset_{row.asset.id}"
-                
-                # Normalize asset name (remove format suffixes)
-                normalized_name = normalize_asset_name(asset_name)
-                
-                # Get account name from state.accounts
-                account_name = account_id
-                for acc in state_accounts:
-                    if acc['id'] == account_id:
-                        account_name = acc['name']
-                        break
-                
-                all_results.append({
-                    'asset_name': normalized_name,
-                    'asset_name_original': asset_name,
-                    'account': account_name,
-                    'account_id': account_id,
-                    'campaign': row.campaign.name,
-                    'ad_group': row.ad_group.name,
-                    'cost': row.metrics.cost_micros / 1_000_000 if row.metrics.cost_micros else 0,
-                    'impressions': row.metrics.impressions or 0,
-                    'installs': row.metrics.conversions or 0
-                })
+            for batch in response:
+                for row in batch.results:
+                    # Get asset name
+                    asset_name = row.asset.name
+                    if not asset_name and hasattr(row.asset, 'youtube_video_asset'):
+                        yt_asset = row.asset.youtube_video_asset
+                        if hasattr(yt_asset, 'youtube_video_title') and yt_asset.youtube_video_title:
+                            asset_name = yt_asset.youtube_video_title
+                    if not asset_name:
+                        asset_name = f"Asset_{row.asset.id}"
+                    
+                    # Normalize asset name (remove format suffixes)
+                    normalized_name = normalize_asset_name(asset_name)
+                    
+                    # Get account name from state.accounts
+                    account_name = account_id
+                    for acc in state_accounts:
+                        if acc['id'] == account_id:
+                            account_name = acc['name']
+                            break
+                    
+                    all_results.append({
+                        'asset_name': normalized_name,
+                        'asset_name_original': asset_name,
+                        'account': account_name,
+                        'account_id': account_id,
+                        'campaign': row.campaign.name,
+                        'ad_group': row.ad_group.name,
+                        'cost': row.metrics.cost_micros / 1_000_000 if row.metrics.cost_micros else 0,
+                        'impressions': row.metrics.impressions or 0,
+                        'installs': row.metrics.conversions or 0
+                    })
         except GoogleAdsException as ex:
             continue
     
@@ -692,13 +787,17 @@ async def dashboard(req: Request, body: DashboardRequest, user: dict[str, Any] =
     shown as % of daily spend (100% stacked).
     Adjust token is read from ADJUST_API_TOKEN env variable.
     """
+    # Validate date range (max 3 months)
+    validate_date_range(body.start_date, body.end_date, max_months=3)
+    
     adjust_token = os.environ.get("ADJUST_API_TOKEN", "").strip()
     if not adjust_token:
         raise HTTPException(status_code=500, detail="ADJUST_API_TOKEN not configured on server")
     if not body.adjust_app_token:
         raise HTTPException(status_code=400, detail="Missing adjust_app_token")
 
-    dates = _make_date_range(body.start_date, body.end_date)
+    group_by = body.group_by or "day"
+    dates = _make_date_range(body.start_date, body.end_date, group_by)
     platform = body.platform or "Android"
     platform_sub = _platform_substr(platform)
     platform_kw = _platform_keyword(platform)
@@ -739,29 +838,31 @@ async def dashboard(req: Request, body: DashboardRequest, user: dict[str, Any] =
                 AND campaign.name LIKE '%{platform_kw}%'
         """
         try:
-            response = ga_service.search(customer_id=account_id, query=query)
-            for row in response:
-                asset_name = row.asset.name
-                if not asset_name and hasattr(row.asset, 'youtube_video_asset'):
-                    yt_asset = row.asset.youtube_video_asset
-                    if hasattr(yt_asset, 'youtube_video_title') and yt_asset.youtube_video_title:
-                        asset_name = yt_asset.youtube_video_title
-                if not asset_name:
-                    asset_name = f"Asset_{row.asset.id}"
-                normalized_name = normalize_asset_name(asset_name)
+            # Use search_stream for better memory efficiency with large datasets
+            response = ga_service.search_stream(customer_id=account_id, query=query)
+            for batch in response:
+                for row in batch.results:
+                    asset_name = row.asset.name
+                    if not asset_name and hasattr(row.asset, 'youtube_video_asset'):
+                        yt_asset = row.asset.youtube_video_asset
+                        if hasattr(yt_asset, 'youtube_video_title') and yt_asset.youtube_video_title:
+                            asset_name = yt_asset.youtube_video_title
+                    if not asset_name:
+                        asset_name = f"Asset_{row.asset.id}"
+                    normalized_name = normalize_asset_name(asset_name)
 
-                google_rows.append({
-                    "day": str(row.segments.date),
-                    "creative": normalized_name,
-                    "cost": (row.metrics.cost_micros / 1_000_000) if row.metrics.cost_micros else 0.0,
-                    "impressions": row.metrics.impressions or 0,
-                    "installs": row.metrics.conversions or 0
-                })
-                google_cvr_data.append({
-                    "day": str(row.segments.date),
-                    "impressions": row.metrics.impressions or 0,
-                    "installs": row.metrics.conversions or 0
-                })
+                    google_rows.append({
+                        "day": str(row.segments.date),
+                        "creative": normalized_name,
+                        "cost": (row.metrics.cost_micros / 1_000_000) if row.metrics.cost_micros else 0.0,
+                        "impressions": row.metrics.impressions or 0,
+                        "installs": row.metrics.conversions or 0
+                    })
+                    google_cvr_data.append({
+                        "day": str(row.segments.date),
+                        "impressions": row.metrics.impressions or 0,
+                        "installs": row.metrics.conversions or 0
+                    })
         except GoogleAdsException:
             continue
 
@@ -772,23 +873,34 @@ async def dashboard(req: Request, body: DashboardRequest, user: dict[str, Any] =
         date_field="day",
         value_field="cost",
         top_n=body.top_n,
-        include_cvr=True
+        include_cvr=True,
+        group_by=group_by,
+        start_date=body.start_date,
+        end_date=body.end_date
     )
 
     # -------- Build CVR data for Google --------
-    def build_cvr_by_day(cvr_data: list, dates: list) -> list:
-        """Aggregate impressions and installs by day, calculate CVR"""
+    def build_cvr_by_period(cvr_data: list, dates: list, group_by: str, start_date: str, end_date: str) -> list:
+        """Aggregate impressions and installs by period, calculate CVR"""
         df = pd.DataFrame(cvr_data) if cvr_data else pd.DataFrame(columns=["day", "impressions", "installs"])
         if df.empty:
             return [0.0] * len(dates)
-        df["day"] = df["day"].astype(str)
+        df["day"] = pd.to_datetime(df["day"])
         df["impressions"] = pd.to_numeric(df["impressions"], errors="coerce").fillna(0)
         df["installs"] = pd.to_numeric(df["installs"], errors="coerce").fillna(0)
-        agg = df.groupby("day").agg({"impressions": "sum", "installs": "sum"}).reindex(dates, fill_value=0)
+        
+        # Group by period if needed
+        if group_by != "day":
+            df["period"] = df["day"].apply(lambda d: _get_period_for_date(d.strftime("%Y-%m-%d"), group_by, start_date, end_date))
+            agg = df.groupby("period").agg({"impressions": "sum", "installs": "sum"}).reindex(dates, fill_value=0)
+        else:
+            df["day"] = df["day"].dt.strftime("%Y-%m-%d")
+            agg = df.groupby("day").agg({"impressions": "sum", "installs": "sum"}).reindex(dates, fill_value=0)
+        
         cvr = (agg["installs"] / agg["impressions"].replace({0: pd.NA})).fillna(0) * 100
         return [round(float(x), 4) for x in cvr.values]
 
-    google_cvr = build_cvr_by_day(google_cvr_data, dates)
+    google_cvr = build_cvr_by_period(google_cvr_data, dates, group_by, body.start_date, body.end_date)
 
     # -------- Adjust (AppLovin + Mintegral) --------
     def build_adjust_channel(channel_id: str):
@@ -815,11 +927,14 @@ async def dashboard(req: Request, body: DashboardRequest, user: dict[str, Any] =
             date_field="day",
             value_field="cost",
             top_n=body.top_n,
-            include_cvr=True
+            include_cvr=True,
+            group_by=group_by,
+            start_date=body.start_date,
+            end_date=body.end_date
         )
         # CVR data for this channel
         cvr_rows = [{"day": r["day"], "impressions": r.get("impressions", 0), "installs": r.get("installs", 0)} for r in filtered]
-        cvr = build_cvr_by_day(cvr_rows, dates)
+        cvr = build_cvr_by_period(cvr_rows, dates, group_by, body.start_date, body.end_date)
         meta = {
             "raw_rows": len(raw),
             "filtered_rows": len(filtered),
