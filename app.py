@@ -940,6 +940,9 @@ async def dashboard(req: Request, body: DashboardRequest, user: dict[str, Any] =
             platform=platform
         )
         filtered = [r for r in raw if _safe_contains_platform(r.get("campaign", ""), platform_sub)]
+        # For Mintegral: exclude creatives with .jpg or icon in name
+        if channel_id == "partner_369":
+            filtered = [r for r in filtered if not any(x in r.get("creative_network", "").lower() for x in [".jpg", "icon"])]
         rows = [{
             "day": r["day"], 
             "creative_network": normalize_applovin_creative(r["creative_network"]), 
