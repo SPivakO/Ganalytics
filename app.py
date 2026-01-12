@@ -19,7 +19,8 @@ from urllib import parse as urlparse
 from urllib.error import HTTPError, URLError
 from datetime import datetime, timedelta
 import asyncio
-from concurrent.futures import ThreadPoolExecutor
+import time
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 
 load_dotenv()
 
@@ -309,7 +310,7 @@ def _adjust_request(url: str, api_token: str, method: str = "GET", json_body: Op
             if data is not None:
                 h["Content-Type"] = "application/json"
             req = urlrequest.Request(url, headers=h, method=method, data=data)
-            with urlrequest.urlopen(req, timeout=180) as resp:  # Increased timeout for large date ranges
+            with urlrequest.urlopen(req, timeout=45) as resp:  # Reduced timeout to fit Cloudflare limits
                 content_type = resp.headers.get("Content-Type", "")
                 body = resp.read()
                 return {"status": getattr(resp, "status", 200), "content_type": content_type, "body": body, "method": method}
@@ -838,6 +839,9 @@ async def dashboard(req: Request, body: DashboardRequest, user: dict[str, Any] =
     # Validate date range (max 3 months)
     validate_date_range(body.start_date, body.end_date, max_months=3)
     
+    start_time = time.time()
+    timing = {"google_ms": 0, "applovin_ms": 0, "mintegral_ms": 0}
+    
     adjust_token = os.environ.get("ADJUST_API_TOKEN", "").strip()
     if not adjust_token:
         raise HTTPException(status_code=500, detail="ADJUST_API_TOKEN not configured on server")
@@ -918,18 +922,28 @@ async def dashboard(req: Request, body: DashboardRequest, user: dict[str, Any] =
             pass
         return rows, cvr_data
 
-    # Fetch all accounts in parallel
+    # Fetch all accounts in parallel with timeout
     google_rows = []
     google_cvr_data = []
+    google_error = None
+    t0 = time.time()
     if google_account_ids:
-        loop = asyncio.get_event_loop()
-        with ThreadPoolExecutor(max_workers=min(len(google_account_ids), 5)) as executor:
-            futures = [loop.run_in_executor(executor, fetch_google_account_data, acc_id) 
-                      for acc_id in google_account_ids]
-            results = await asyncio.gather(*futures)
-            for rows, cvr_data in results:
-                google_rows.extend(rows)
-                google_cvr_data.extend(cvr_data)
+        try:
+            loop = asyncio.get_event_loop()
+            with ThreadPoolExecutor(max_workers=min(len(google_account_ids), 5)) as executor:
+                futures = [loop.run_in_executor(executor, fetch_google_account_data, acc_id) 
+                          for acc_id in google_account_ids]
+                results = await asyncio.wait_for(asyncio.gather(*futures), timeout=50.0)
+                for rows, cvr_data in results:
+                    google_rows.extend(rows)
+                    google_cvr_data.extend(cvr_data)
+        except asyncio.TimeoutError:
+            google_error = "timeout_50s"
+            print(f"[dashboard] Google Ads timeout after 50s")
+        except Exception as e:
+            google_error = str(e)[:100]
+            print(f"[dashboard] Google Ads error: {e}")
+    timing["google_ms"] = int((time.time() - t0) * 1000)
 
     google_chart = _build_stacked_100(
         dates=dates,
@@ -1026,15 +1040,36 @@ async def dashboard(req: Request, body: DashboardRequest, user: dict[str, Any] =
                 {"raw_rows": 0, "filtered_rows": 0, "channel_id": channel_id, "platform_sub": platform_sub}
             ), error_msg
 
-    # Execute Adjust requests in parallel
+    # Execute Adjust requests in parallel with timeout
+    t0 = time.time()
     loop = asyncio.get_event_loop()
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        applovin_future = loop.run_in_executor(executor, fetch_adjust_channel, "partner_7")
-        mintegral_future = loop.run_in_executor(executor, fetch_adjust_channel, "partner_369")
-        applovin_result, mintegral_result = await asyncio.gather(applovin_future, mintegral_future)
+    
+    # Default empty results
+    applovin_result = ({"dates": dates, "series": []}, [0.0] * len(dates), {"raw_rows": 0, "channel_id": "partner_7"}), "not_started"
+    mintegral_result = ({"dates": dates, "series": []}, [0.0] * len(dates), {"raw_rows": 0, "channel_id": "partner_369"}), "not_started"
+    
+    try:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            applovin_future = loop.run_in_executor(executor, fetch_adjust_channel, "partner_7")
+            mintegral_future = loop.run_in_executor(executor, fetch_adjust_channel, "partner_369")
+            applovin_result, mintegral_result = await asyncio.wait_for(
+                asyncio.gather(applovin_future, mintegral_future), 
+                timeout=50.0
+            )
+    except asyncio.TimeoutError:
+        print(f"[dashboard] Adjust timeout after 50s")
+        # Keep whatever we got or empty defaults
+    except Exception as e:
+        print(f"[dashboard] Adjust gather error: {e}")
+    
+    timing["applovin_ms"] = int((time.time() - t0) * 1000)
+    timing["mintegral_ms"] = timing["applovin_ms"]  # same parallel batch
     
     (applovin_chart, applovin_cvr, applovin_meta), applovin_error = applovin_result
     (mintegral_chart, mintegral_cvr, mintegral_meta), mintegral_error = mintegral_result
+    
+    total_ms = int((time.time() - start_time) * 1000)
+    print(f"[dashboard] completed in {total_ms}ms (google: {timing['google_ms']}ms, adjust: {timing['applovin_ms']}ms)")
 
     return {
         "google": google_chart,
@@ -1049,6 +1084,9 @@ async def dashboard(req: Request, body: DashboardRequest, user: dict[str, Any] =
         "meta": {
             "group_by": group_by,
             "dates_count": len(dates),
+            "timing_ms": timing,
+            "total_ms": total_ms,
+            "google_error": google_error,
             "applovin": applovin_meta,
             "mintegral": mintegral_meta,
             "applovin_error": applovin_error,
