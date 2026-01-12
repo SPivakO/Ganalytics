@@ -30,7 +30,7 @@ const groupByCampaignCheckbox = document.getElementById('group-by-campaign');
 
 // Dashboard DOM
 const dashPlatformSelect = document.getElementById('dash-platform');
-const dashGroupBySelect = document.getElementById('dash-group-by');
+// Group by removed - only daily supported
 const dashAppSelect = document.getElementById('dash-app');
 const dashAccountsToggle = document.getElementById('dash-accounts-toggle');
 const dashAccountsMenu = document.getElementById('dash-accounts-menu');
@@ -712,7 +712,7 @@ async function loadDashboard(){
   }
   
   const platform = dashPlatformSelect ? dashPlatformSelect.value : 'Android';
-  const groupBy = dashGroupBySelect ? dashGroupBySelect.value : 'day';
+  const groupBy = 'day';  // Only daily grouping supported
   const adjustAppToken = dashAppSelect ? dashAppSelect.value : '';
   const accountIds = getSelectedDashAccountIds();
 
