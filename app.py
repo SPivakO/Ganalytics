@@ -160,58 +160,71 @@ def _safe_contains_platform(name: str, platform: str) -> bool:
 
 
 def _make_date_range(start_date: str, end_date: str, group_by: str = "day") -> List[str]:
-    """Generate date range based on grouping type"""
+    """
+    Generate date range labels based on grouping type.
+
+    IMPORTANT:
+    - For week/month grouping we must use the exact same labeling strategy as
+      `_get_period_for_date()` (including clamping to the requested [start, end] range),
+      otherwise some rows will map to a period label that is not present in `dates`
+      and will be dropped during reindexing.
+    """
+    start = pd.to_datetime(start_date)
+    end = pd.to_datetime(end_date)
+
     if group_by == "week":
-        # Generate weekly periods (Monday to Sunday)
-        start = pd.to_datetime(start_date)
-        end = pd.to_datetime(end_date)
-        # Find first Monday on or before start date
-        days_since_monday = start.weekday()
-        week_start = start - pd.Timedelta(days=days_since_monday)
-        periods = []
-        current = week_start
-        while current <= end:
-            week_end = current + pd.Timedelta(days=6)
-            if week_end > end:
-                week_end = end
-            if current <= end:
-                periods.append(f"{current.strftime('%Y-%m-%d')} - {week_end.strftime('%Y-%m-%d')}")
-            current += pd.Timedelta(days=7)
+        periods: List[str] = []
+        current_start = start
+        while current_start <= end:
+            # calendar week ends on Sunday (Mon=0..Sun=6)
+            days_until_sunday = 6 - current_start.weekday()
+            current_end = current_start + pd.Timedelta(days=days_until_sunday)
+            if current_end > end:
+                current_end = end
+            periods.append(f"{current_start.strftime('%Y-%m-%d')} - {current_end.strftime('%Y-%m-%d')}")
+            current_start = current_end + pd.Timedelta(days=1)
         return periods
-    elif group_by == "month":
-        # Generate monthly periods
-        start = pd.to_datetime(start_date)
-        end = pd.to_datetime(end_date)
+
+    if group_by == "month":
         periods = []
-        current = start.replace(day=1)
-        while current <= end:
-            month_end = current + pd.offsets.MonthEnd(0)
-            if month_end > end:
-                month_end = end
-            if current <= end:
-                periods.append(f"{current.strftime('%Y-%m-%d')} - {month_end.strftime('%Y-%m-%d')}")
-            # Move to next month
-            current = month_end + pd.Timedelta(days=1)
-            current = current.replace(day=1)
+        current_start = start
+        while current_start <= end:
+            month_end = (current_start.replace(day=1) + pd.offsets.MonthEnd(0))
+            current_end = month_end if month_end <= end else end
+            periods.append(f"{current_start.strftime('%Y-%m-%d')} - {current_end.strftime('%Y-%m-%d')}")
+            current_start = current_end + pd.Timedelta(days=1)
         return periods
-    else:
-        # Daily (default)
-        dr = pd.date_range(start=start_date, end=end_date, freq="D")
-        return [d.strftime("%Y-%m-%d") for d in dr]
+
+    # Daily (default)
+    dr = pd.date_range(start=start, end=end, freq="D")
+    return [d.strftime("%Y-%m-%d") for d in dr]
 
 
 def _get_period_for_date(date_str: str, group_by: str, start_date: str, end_date: str) -> str:
     """Get period label for a given date based on grouping type"""
     date = pd.to_datetime(date_str)
+    start = pd.to_datetime(start_date) if start_date else None
+    end = pd.to_datetime(end_date) if end_date else None
+
+    def _clamp_range(a: pd.Timestamp, b: pd.Timestamp) -> tuple[pd.Timestamp, pd.Timestamp]:
+        aa, bb = a, b
+        if start is not None and aa < start:
+            aa = start
+        if end is not None and bb > end:
+            bb = end
+        return aa, bb
+
     if group_by == "week":
-        # Find Monday of the week
+        # Find Monday..Sunday bounds, then clamp to requested [start_date, end_date]
         days_since_monday = date.weekday()
         week_start = date - pd.Timedelta(days=days_since_monday)
         week_end = week_start + pd.Timedelta(days=6)
+        week_start, week_end = _clamp_range(week_start, week_end)
         return f"{week_start.strftime('%Y-%m-%d')} - {week_end.strftime('%Y-%m-%d')}"
     elif group_by == "month":
         month_start = date.replace(day=1)
         month_end = (month_start + pd.offsets.MonthEnd(0))
+        month_start, month_end = _clamp_range(month_start, month_end)
         return f"{month_start.strftime('%Y-%m-%d')} - {month_end.strftime('%Y-%m-%d')}"
     else:
         return date_str
