@@ -396,14 +396,26 @@ def _store_type_for_platform(platform: str) -> str:
     return "app_store" if p == "ios" else "google_play"
 
 
-def _fetch_adjust_creative_daily_cost(api_token: str, app_token: str, channel_id: str, start_date: str, end_date: str, platform: str):
+def _fetch_adjust_creative_daily_cost(
+    api_token: str,
+    app_token: str,
+    channel_id: str,
+    start_date: str,
+    end_date: str,
+    platform: str,
+    index: str = "day",
+):
     base = "https://automate.adjust.com/reports-service/pivot_report"
     date_period = f"{start_date}:{end_date}"
     store_type = _store_type_for_platform(platform)
+    requested_index = (index or "day").strip().lower()
+    if requested_index not in ("day", "week", "month"):
+        requested_index = "day"
+    used_index = requested_index
     params = {
         "app_token__in": f"\"{app_token}\"",
         "channel_id__in": f"\"{channel_id}\"",
-        "index": "day",
+        "index": requested_index,
         "dimensions": "creative_network,campaign",
         "metrics": "cost,installs,network_impressions",
         "date_period": date_period,
@@ -424,12 +436,17 @@ def _fetch_adjust_creative_daily_cost(api_token: str, app_token: str, channel_id
         rows = _parse_adjust_payload(resp.get("content_type", ""), raw_body)
     except Exception as e:
         msg = str(e)
+        # If Adjust doesn't accept our index/date_period format, fallback to POST variants.
+        # Additionally, if week/month index isn't supported, fallback to day.
         if "loc\":[\"index\"]" in msg or "loc\":[\"date_period\"]" in msg or "validation_error" in msg:
+            # If requested week/month fails, retry with day
+            if requested_index in ("week", "month"):
+                used_index = "day"
             payload_variants = [
                 {
                     "app_token__in": f"\"{app_token}\"",
                     "channel_id__in": f"\"{channel_id}\"",
-                    "index": "day",
+                    "index": used_index,
                     "dimensions": "creative_network,campaign",
                     "metrics": "cost,installs,network_impressions",
                     "date_period": date_period,
@@ -438,7 +455,7 @@ def _fetch_adjust_creative_daily_cost(api_token: str, app_token: str, channel_id
                     "readable_names": True,
                 },
                 {
-                    "index": "day",
+                    "index": used_index,
                     "dimensions": ["creative_network", "campaign"],
                     "metrics": ["cost", "installs", "network_impressions"],
                     "date_period": date_period,
@@ -468,6 +485,8 @@ def _fetch_adjust_creative_daily_cost(api_token: str, app_token: str, channel_id
     debug = {
         "content_type": resp.get("content_type", ""),
         "method": resp.get("method", "GET"),
+        "requested_index": requested_index,
+        "used_index": used_index,
         "body_len": len(raw_body) if 'raw_body' in locals() and raw_body is not None else None,
         "snippet": (raw_body[:200].decode("utf-8", errors="replace") if 'raw_body' in locals() and raw_body is not None else ""),
         "first_row_keys": [],
@@ -492,6 +511,12 @@ def _fetch_adjust_creative_daily_cost(api_token: str, app_token: str, channel_id
         impressions = rr.get("network_impressions") or rr.get("impressions") or 0
         if not day or not creative:
             continue
+        # Normalize period key to YYYY-MM-DD (Adjust may return YYYY-MM or timestamps for week/month indices)
+        try:
+            day_ts = pd.to_datetime(day)
+            day_str = day_ts.strftime("%Y-%m-%d")
+        except Exception:
+            day_str = str(day)[:10]
         try:
             cost_val = float(cost) if cost is not None and cost != "" else 0.0
         except:
@@ -505,7 +530,7 @@ def _fetch_adjust_creative_daily_cost(api_token: str, app_token: str, channel_id
         except:
             impressions_val = 0
         norm.append({
-            "day": str(day)[:10], 
+            "day": day_str,
             "creative_network": str(creative), 
             "campaign": str(campaign or ""), 
             "cost": cost_val,
@@ -950,7 +975,8 @@ async def dashboard(req: Request, body: DashboardRequest, user: dict[str, Any] =
             channel_id=channel_id,
             start_date=body.start_date,
             end_date=body.end_date,
-            platform=platform
+            platform=platform,
+            index=group_by
         )
         filtered = [r for r in raw if _safe_contains_platform(r.get("campaign", ""), platform_sub)]
         # For Mintegral: exclude creatives with .jpg or icon in name
