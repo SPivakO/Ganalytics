@@ -112,8 +112,13 @@ function setupEventListeners(){
 // ==================== REPORTS TAB ====================
 async function loadAccounts(){
   try{
-    const resp = await fetch('/api/accounts'); const data = await resp.json();
-    if(!resp.ok) throw new Error(data.detail||'Failed to load accounts');
+    const resp = await fetch('/api/accounts');
+    if(!resp.ok){
+      let msg = `HTTP ${resp.status}`;
+      try{ const d = await resp.json(); msg = d.detail || msg; }catch(_){ msg = await resp.text() || msg; }
+      throw new Error(msg);
+    }
+    const data = await resp.json();
     state.accounts = data.accounts;
     renderAccounts(accountsContainer,'onAccountChange');
     renderAccounts(uploadAccountsContainer,'onUploadAccountChange');
@@ -439,8 +444,12 @@ async function loadDashboardAccounts() {
   
   try {
     const resp = await fetch('/api/accounts');
+    if (!resp.ok) {
+      let msg = `HTTP ${resp.status}`;
+      try { const d = await resp.json(); msg = d.detail || msg; } catch(_) { msg = await resp.text() || msg; }
+      throw new Error(msg);
+    }
     const data = await resp.json();
-    if (!resp.ok) throw new Error(data.detail || 'Failed to load accounts');
     
     dashAccountsLoaded = true;
     renderDashboardAccounts(data.accounts);

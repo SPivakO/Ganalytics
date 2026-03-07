@@ -582,7 +582,11 @@ async def logout(request: Request):
 @app.get("/api/accounts")
 async def get_accounts(user: dict[str, Any] = Depends(get_current_user)):
     """Get all available accounts"""
-    client = get_client()
+    try:
+        client = get_client()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Google Ads client init failed: {e}")
+    
     login_customer_id = client.login_customer_id.replace('-', '') if client.login_customer_id else None
     
     if not login_customer_id:
@@ -609,6 +613,8 @@ async def get_accounts(user: dict[str, Any] = Depends(get_current_user)):
         return {"accounts": sorted(accounts, key=lambda x: x['name'])}
     except GoogleAdsException as ex:
         raise HTTPException(status_code=500, detail=str(ex.failure.errors[0].message))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch accounts: {e}")
 
 
 @app.get("/api/campaigns")
