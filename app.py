@@ -1309,41 +1309,49 @@ def create_adgroup_with_videos(client, customer_id, campaign_id, adgroup_name, v
             "logs": logs
         }
     
-    # 2. Create YouTube Video Assets
-    logs.append(f"Creating {len(video_ids)} video assets...")
+    # 2. Create or find YouTube Video Assets
+    unique_video_ids = list(dict.fromkeys(video_ids))
+    logs.append(f"Processing {len(unique_video_ids)} unique video assets...")
     created_video_assets = []
+    seen_resources = set()
     
-    for video_id in video_ids:
-        asset_operation = client.get_type("AssetOperation")
-        asset = asset_operation.create
-        asset.youtube_video_asset.youtube_video_id = video_id
-        # Don't set asset.name - Google Ads will auto-fetch title from YouTube
+    for video_id in unique_video_ids:
+        asset_resource = None
         
+        # Try to find existing asset first
         try:
-            asset_response = asset_service.mutate_assets(
-                customer_id=customer_id,
-                operations=[asset_operation]
-            )
-            created_video_assets.append(asset_response.results[0].resource_name)
-            logs.append(f"Created video asset: {video_id}")
-        except GoogleAdsException as ex:
-            # Asset might already exist, try to find it
-            logs.append(f"Video {video_id}: {ex.failure.errors[0].message}")
-            # Try to get existing asset
+            ga_service = client.get_service("GoogleAdsService")
+            query = f"""
+                SELECT asset.resource_name 
+                FROM asset 
+                WHERE asset.youtube_video_asset.youtube_video_id = '{video_id}'
+            """
+            response = ga_service.search(customer_id=customer_id, query=query)
+            for row in response:
+                asset_resource = row.asset.resource_name
+                logs.append(f"Found existing asset for {video_id}")
+                break
+        except Exception:
+            pass
+        
+        # If not found, create new
+        if not asset_resource:
             try:
-                ga_service = client.get_service("GoogleAdsService")
-                query = f"""
-                    SELECT asset.resource_name 
-                    FROM asset 
-                    WHERE asset.youtube_video_asset.youtube_video_id = '{video_id}'
-                """
-                response = ga_service.search(customer_id=customer_id, query=query)
-                for row in response:
-                    created_video_assets.append(row.asset.resource_name)
-                    logs.append(f"Found existing asset for {video_id}")
-                    break
-            except:
-                logs.append(f"Could not find existing asset for {video_id}")
+                asset_operation = client.get_type("AssetOperation")
+                asset = asset_operation.create
+                asset.youtube_video_asset.youtube_video_id = video_id
+                asset_response = asset_service.mutate_assets(
+                    customer_id=customer_id,
+                    operations=[asset_operation]
+                )
+                asset_resource = asset_response.results[0].resource_name
+                logs.append(f"Created video asset: {video_id}")
+            except GoogleAdsException as ex:
+                logs.append(f"Video {video_id}: {ex.failure.errors[0].message}")
+        
+        if asset_resource and asset_resource not in seen_resources:
+            seen_resources.add(asset_resource)
+            created_video_assets.append(asset_resource)
     
     logs.append(f"Total video assets: {len(created_video_assets)}")
     
