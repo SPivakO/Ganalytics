@@ -113,12 +113,13 @@ function setupEventListeners(){
 async function loadAccounts(){
   try{
     const resp = await fetch('/api/accounts');
+    const text = await resp.text();
     if(!resp.ok){
       let msg = `HTTP ${resp.status}`;
-      try{ const d = await resp.json(); msg = d.detail || msg; }catch(_){ msg = await resp.text() || msg; }
+      try{ msg = JSON.parse(text).detail || msg; }catch(_){ msg = text || msg; }
       throw new Error(msg);
     }
-    const data = await resp.json();
+    const data = JSON.parse(text);
     state.accounts = data.accounts;
     renderAccounts(accountsContainer,'onAccountChange');
     renderAccounts(uploadAccountsContainer,'onUploadAccountChange');
@@ -444,12 +445,13 @@ async function loadDashboardAccounts() {
   
   try {
     const resp = await fetch('/api/accounts');
+    const text = await resp.text();
     if (!resp.ok) {
       let msg = `HTTP ${resp.status}`;
-      try { const d = await resp.json(); msg = d.detail || msg; } catch(_) { msg = await resp.text() || msg; }
+      try { msg = JSON.parse(text).detail || msg; } catch(_) { msg = text || msg; }
       throw new Error(msg);
     }
-    const data = await resp.json();
+    const data = JSON.parse(text);
     
     dashAccountsLoaded = true;
     renderDashboardAccounts(data.accounts);
