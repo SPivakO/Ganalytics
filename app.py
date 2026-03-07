@@ -2,7 +2,7 @@ import os
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request, Depends
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.responses import FileResponse, RedirectResponse, JSONResponse
 from starlette.middleware.sessions import SessionMiddleware
 from authlib.integrations.starlette_client import OAuth
 from pydantic import BaseModel
@@ -25,6 +25,17 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeou
 load_dotenv()
 
 app = FastAPI(title="Google Ads YouTube Assets Report")
+
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    import traceback
+    traceback.print_exc()
+    return JSONResponse(
+        status_code=500,
+        content={"detail": f"{type(exc).__name__}: {exc}"}
+    )
+
 
 # Добавляем middleware для сессий (хранение в Cookie)
 app.add_middleware(
@@ -539,6 +550,22 @@ def _fetch_adjust_creative_daily_cost(
             "impressions": impressions_val
         })
     return norm, debug
+
+
+@app.get("/api/health")
+async def health():
+    """Diagnostic endpoint — no auth required"""
+    result = {"status": "ok"}
+    try:
+        client = get_client()
+        result["client"] = "initialized"
+        result["login_customer_id"] = client.login_customer_id
+    except Exception as e:
+        result["status"] = "error"
+        result["client_error"] = f"{type(e).__name__}: {e}"
+    env_keys = ["ADS_DEVELOPER_TOKEN", "ADS_CLIENT_ID", "ADS_CLIENT_SECRET", "ADS_REFRESH_TOKEN", "ADS_LOGIN_CUSTOMER_ID"]
+    result["env_set"] = {k: bool(os.getenv(k)) for k in env_keys}
+    return result
 
 
 @app.get("/")
