@@ -1314,81 +1314,43 @@ def create_adgroup_with_videos(client, customer_id, campaign_id, adgroup_name, v
     
     logs.append(f"Total video assets: {len(created_video_assets)}")
     
-    # 3. Create Text Assets (Headlines and Descriptions)
-    logs.append(f"Creating text assets...")
-    headline_assets = []
-    description_assets = []
+    if not created_video_assets:
+        logs.append("No video assets resolved — cannot create App Ad")
+        return {
+            "account_id": customer_id,
+            "campaign_id": campaign_id,
+            "success": False,
+            "error": "Failed to create or find any video assets",
+            "logs": logs
+        }
     
-    for headline in headlines:
-        asset_operation = client.get_type("AssetOperation")
-        asset = asset_operation.create
-        asset.text_asset.text = headline
-        asset.name = f"Headline_{headline[:20]}"
-        
-        try:
-            asset_response = asset_service.mutate_assets(
-                customer_id=customer_id,
-                operations=[asset_operation]
-            )
-            headline_assets.append(asset_response.results[0].resource_name)
-        except GoogleAdsException as ex:
-            logs.append(f"Headline '{headline[:20]}...': {ex.failure.errors[0].message}")
-    
-    for description in descriptions:
-        asset_operation = client.get_type("AssetOperation")
-        asset = asset_operation.create
-        asset.text_asset.text = description
-        asset.name = f"Desc_{description[:20]}"
-        
-        try:
-            asset_response = asset_service.mutate_assets(
-                customer_id=customer_id,
-                operations=[asset_operation]
-            )
-            description_assets.append(asset_response.results[0].resource_name)
-        except GoogleAdsException as ex:
-            logs.append(f"Description '{description[:20]}...': {ex.failure.errors[0].message}")
-    
-    logs.append(f"Created {len(headline_assets)} headlines, {len(description_assets)} descriptions")
-    
-    # 4. Create App Ad with text and videos
+    # 3. Create App Ad with text and videos
     logs.append("Creating App Ad...")
     
     ad_group_ad_operation = client.get_type("AdGroupAdOperation")
     ad_group_ad = ad_group_ad_operation.create
     ad_group_ad.ad_group = ad_group_resource
-    # For App ads, ad cannot be created in PAUSED state. Use ENABLED.
     ad_group_ad.status = client.enums.AdGroupAdStatusEnum.ENABLED
     
-    # Set up App Ad
     ad = ad_group_ad.ad
     app_ad = ad.app_ad
     
-    # Add headlines (direct text, not asset references)
     for headline_text in headlines[:5]:
         headline_info = client.get_type("AdTextAsset")
         headline_info.text = headline_text
         app_ad.headlines.append(headline_info)
     
-    # Add descriptions (direct text)
     for desc_text in descriptions[:5]:
         desc_info = client.get_type("AdTextAsset")
         desc_info.text = desc_text
         app_ad.descriptions.append(desc_info)
     
-    # Add videos (using video IDs directly)
-    for vid in video_ids:
+    for v_asset in created_video_assets:
         video_info = client.get_type("AdVideoAsset")
-        video_info.asset = f"customers/{customer_id}/assets/{vid}"  # Try with video_id
+        video_info.asset = v_asset
         app_ad.youtube_videos.append(video_info)
     
-    # Alternative: Add videos using created asset resources
-    if created_video_assets:
-        app_ad.youtube_videos.clear()  # Clear previous attempt
-        for v_asset in created_video_assets:
-            video_info = client.get_type("AdVideoAsset")
-            video_info.asset = v_asset
-            app_ad.youtube_videos.append(video_info)
+    logs.append(f"App Ad payload: {len(headlines[:5])} headlines, {len(descriptions[:5])} descriptions, {len(created_video_assets)} videos")
     
     try:
         ad_response = ad_group_ad_service.mutate_ad_group_ads(
@@ -1404,6 +1366,14 @@ def create_adgroup_with_videos(client, customer_id, campaign_id, adgroup_name, v
                 error_details.append(f"  Details: {error.details}")
         error_msg = "; ".join(error_details)
         logs.append(f"App Ad error: {error_msg}")
+        return {
+            "account_id": customer_id,
+            "campaign_id": campaign_id,
+            "adgroup_resource": ad_group_resource,
+            "success": False,
+            "error": f"Ad group created but App Ad failed: {error_msg}",
+            "logs": logs
+        }
     
     logs.append("Completed!")
     
