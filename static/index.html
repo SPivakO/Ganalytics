@@ -32,6 +32,10 @@
                 <span class="tab-icon">✏️</span>
                 Edit Ad Group
             </button>
+            <button class="tab-btn" data-tab="migrate">
+                <span class="tab-icon">🔀</span>
+                Migrate 2nd Touch
+            </button>
             <button class="tab-btn" data-tab="dashboard">
                 <span class="tab-icon">📊</span>
                 Channels Dashboard
@@ -292,6 +296,116 @@ https://youtu.be/ANOTHER_ID
             <div id="edit-results" class="upload-results hidden">
                 <h3>Results</h3>
                 <div id="edit-log"></div>
+            </div>
+        </div>
+
+        <!-- MIGRATE 2ND TOUCH TAB -->
+        <div id="migrate-tab" class="tab-content">
+            <p class="edit-hint" style="margin-bottom:16px;">Second touch: copy the <strong>Good/Best</strong> videos from a test ad group (left) into a main ad group in place of its <strong>Low</strong> videos (right). Good/Best on the left and Low on the right are pre-selected — adjust, then Apply. Works across different accounts too.</p>
+
+            <div class="migrate-grid">
+                <!-- SOURCE (left) -->
+                <div class="migrate-pane">
+                    <h3 class="migrate-pane-title src">FROM · Source (test) — copy Good/Best</h3>
+                    <div class="filters-panel">
+                        <div class="filter-group">
+                            <label>Accounts</label>
+                            <div class="multi-select migrate-select" id="src-accounts-container">
+                                <div class="loading">Loading accounts...</div>
+                            </div>
+                        </div>
+                        <div class="filter-group" style="margin-top:12px;">
+                            <label>Campaigns</label>
+                            <div class="multi-select migrate-select" id="src-campaigns-container">
+                                <div class="placeholder">Select accounts first</div>
+                            </div>
+                        </div>
+                        <div class="filter-group" style="margin-top:12px;">
+                            <label>Ad Group (pick one)</label>
+                            <div class="multi-select migrate-select" id="src-adgroups-container">
+                                <div class="placeholder">Select campaigns first</div>
+                            </div>
+                        </div>
+                    </div>
+                    <div id="src-creatives-panel" class="results-panel hidden" style="margin-top:12px;">
+                        <div class="results-header">
+                            <div class="results-info"><span id="src-creatives-count">0 videos</span> · <span class="perf-badge perf-best">BEST</span> <span class="perf-badge perf-good">GOOD</span> pre-checked</div>
+                        </div>
+                        <div class="table-container">
+                            <table>
+                                <thead>
+                                    <tr>
+                                        <th style="width:64px; text-align:center;">Copy</th>
+                                        <th>Creative</th>
+                                        <th>Perf.</th>
+                                        <th class="numeric">Cost</th>
+                                        <th class="numeric">Inst.</th>
+                                        <th class="numeric">CVR</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="src-creatives-body"></tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- DESTINATION (right) -->
+                <div class="migrate-pane">
+                    <h3 class="migrate-pane-title dst">TO · Destination (main) — replace Low</h3>
+                    <div class="filters-panel">
+                        <div class="filter-group">
+                            <label>Accounts</label>
+                            <div class="multi-select migrate-select" id="dst-accounts-container">
+                                <div class="loading">Loading accounts...</div>
+                            </div>
+                        </div>
+                        <div class="filter-group" style="margin-top:12px;">
+                            <label>Campaigns</label>
+                            <div class="multi-select migrate-select" id="dst-campaigns-container">
+                                <div class="placeholder">Select accounts first</div>
+                            </div>
+                        </div>
+                        <div class="filter-group" style="margin-top:12px;">
+                            <label>Ad Group (pick one)</label>
+                            <div class="multi-select migrate-select" id="dst-adgroups-container">
+                                <div class="placeholder">Select campaigns first</div>
+                            </div>
+                        </div>
+                    </div>
+                    <div id="dst-creatives-panel" class="results-panel hidden" style="margin-top:12px;">
+                        <div class="results-header">
+                            <div class="results-info"><span id="dst-creatives-count">0 videos</span> · <span class="perf-badge perf-low">LOW</span> pre-checked to remove</div>
+                        </div>
+                        <div class="table-container">
+                            <table>
+                                <thead>
+                                    <tr>
+                                        <th style="width:64px; text-align:center;">Remove</th>
+                                        <th>Creative</th>
+                                        <th>Perf.</th>
+                                        <th class="numeric">Cost</th>
+                                        <th class="numeric">Inst.</th>
+                                        <th class="numeric">CVR</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="dst-creatives-body"></tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div id="migrate-footer" class="filters-panel hidden" style="margin-top:16px; display:flex; align-items:center; justify-content:space-between; gap:16px;">
+                <div id="migrate-summary" class="migrate-summary">Select an ad group on each side.</div>
+                <button id="migrate-apply-btn" class="btn-primary btn-large">
+                    <span class="btn-icon">🔀</span>
+                    Apply Transfer
+                </button>
+            </div>
+
+            <div id="migrate-results" class="upload-results hidden">
+                <h3>Results</h3>
+                <div id="migrate-log"></div>
             </div>
         </div>
 

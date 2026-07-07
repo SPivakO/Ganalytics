@@ -1110,6 +1110,58 @@ tr:hover {
     text-decoration: underline;
 }
 
+/* Migrate 2nd Touch tab */
+.migrate-grid {
+    display: flex;
+    gap: 16px;
+    align-items: flex-start;
+}
+
+.migrate-pane {
+    flex: 1;
+    min-width: 0;
+}
+
+.migrate-pane-title {
+    font-size: 0.9rem;
+    font-weight: 600;
+    margin-bottom: 8px;
+    padding: 8px 12px;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border-color);
+}
+
+.migrate-pane-title.src {
+    color: var(--accent-green);
+    background: rgba(63, 185, 80, 0.08);
+    border-color: rgba(63, 185, 80, 0.4);
+}
+
+.migrate-pane-title.dst {
+    color: var(--accent-orange);
+    background: rgba(240, 136, 62, 0.08);
+    border-color: rgba(240, 136, 62, 0.4);
+}
+
+.migrate-select {
+    max-height: 140px;
+}
+
+.migrate-summary {
+    font-size: 0.9rem;
+    color: var(--text-secondary);
+}
+
+@media (max-width: 1024px) {
+    .migrate-grid {
+        flex-direction: column;
+    }
+    #migrate-footer {
+        flex-direction: column;
+        align-items: stretch !important;
+    }
+}
+
 .dashboard-cvr-card {
     margin-bottom: 16px;
 }
