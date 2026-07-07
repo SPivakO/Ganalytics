@@ -727,9 +727,9 @@ async def generate_report(request: ReportRequest, user: dict[str, Any] = Depends
     
     for account_id in request.account_ids:
         # Get campaign IDs for this account from selected campaign_ids
-        account_campaigns = [c.split('_', 1)[1] if '_' in c else c 
-                           for c in request.campaign_ids 
-                           if c.startswith(account_id)]
+        account_campaigns = [c.split('_', 1)[1] if '_' in c else c
+                           for c in request.campaign_ids
+                           if c.startswith(account_id + '_')]
         
         if not account_campaigns and request.campaign_ids:
             # Check if any campaign_ids match this account

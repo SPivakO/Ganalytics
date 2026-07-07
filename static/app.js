@@ -92,7 +92,12 @@ function initializeDates() {
   startDateInput.value = formatDate(firstDay);
   endDateInput.value = formatDate(lastDay);
 }
-function formatDate(d){return d.toISOString().split('T')[0];}
+function formatDate(d){
+  // Build YYYY-MM-DD from local parts. Using toISOString() here shifts the date
+  // to UTC and rolls back a day for timezones east of UTC.
+  const y=d.getFullYear(), m=String(d.getMonth()+1).padStart(2,'0'), day=String(d.getDate()).padStart(2,'0');
+  return `${y}-${m}-${day}`;
+}
 
 function initializeTabs(){
   document.querySelectorAll('.tab-btn').forEach(btn=>{
