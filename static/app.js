@@ -59,6 +59,18 @@ const uploadBtn = document.getElementById('upload-btn');
 const uploadResults = document.getElementById('upload-results');
 const uploadLog = document.getElementById('upload-log');
 
+// Edit Ad Group DOM
+const editAccountsContainer = document.getElementById('edit-accounts-container');
+const editCampaignsContainer = document.getElementById('edit-campaigns-container');
+const editAdgroupsContainer = document.getElementById('edit-adgroups-container');
+const editCreativesPanel = document.getElementById('edit-creatives-panel');
+const editCreativesBody = document.getElementById('edit-creatives-body');
+const editAddPanel = document.getElementById('edit-add-panel');
+const editAddUrls = document.getElementById('edit-add-urls');
+const editApplyBtn = document.getElementById('edit-apply-btn');
+const editResults = document.getElementById('edit-results');
+const editLog = document.getElementById('edit-log');
+
 // Common Elements
 const loadingOverlay = document.getElementById('loading-overlay');
 const errorMessage = document.getElementById('error-message');
@@ -107,6 +119,7 @@ function setupEventListeners(){
   downloadBtn.addEventListener('click', downloadCSV);
   uploadBtn.addEventListener('click', createTestAdGroups);
   if (dashLoadBtn) dashLoadBtn.addEventListener('click', loadDashboard);
+  if (editApplyBtn) editApplyBtn.addEventListener('click', applyReplace);
 }
 
 // ==================== REPORTS TAB ====================
@@ -123,6 +136,7 @@ async function loadAccounts(){
     state.accounts = data.accounts;
     renderAccounts(accountsContainer,'onAccountChange');
     renderAccounts(uploadAccountsContainer,'onUploadAccountChange');
+    renderAccounts(editAccountsContainer,'onEditAccountChange');
   }catch(e){showError('Failed to load accounts: '+e.message);}
 }
 function renderAccounts(container, handler){
@@ -408,6 +422,162 @@ function showLoading(){loadingOverlay.classList.remove('hidden'); loadBtn.disabl
 function hideLoading(){loadingOverlay.classList.add('hidden'); loadBtn.disabled=false; uploadBtn.disabled=false;}
 function showError(m){errorMessage.textContent=m; errorMessage.classList.remove('hidden');}
 function hideError(){errorMessage.classList.add('hidden');}
+
+// ==================== EDIT AD GROUP TAB ====================
+let _editContext = { account_id: null, ad_group_id: null, ad_resource_name: null, creatives: [] };
+
+function getEditSelectedAccountIds(){ return Array.from(editAccountsContainer.querySelectorAll('input[type="checkbox"]:checked')).map(cb=>cb.value); }
+function getEditSelectedCampaignIds(){ return Array.from(editCampaignsContainer.querySelectorAll('input[type="checkbox"]:checked')).map(cb=>cb.value); }
+
+function hideEditPanels(){
+  editCreativesPanel.classList.add('hidden');
+  editAddPanel.classList.add('hidden');
+  editResults.classList.add('hidden');
+}
+
+async function onEditAccountChange(){
+  const ids = getEditSelectedAccountIds();
+  editAdgroupsContainer.innerHTML = '<div class="placeholder">Select campaigns first</div>';
+  hideEditPanels();
+  if(!ids.length){ editCampaignsContainer.innerHTML='<div class="placeholder">Select accounts first</div>'; return; }
+  editCampaignsContainer.innerHTML='<div class="loading">Loading campaigns...</div>';
+  try{
+    const resp=await fetch(`/api/all_campaigns?account_ids=${ids.join(',')}`);
+    const data=await resp.json();
+    if(!resp.ok) throw new Error(data.detail||'Failed to load campaigns');
+    renderEditCampaigns(data.campaigns);
+  }catch(e){ editCampaignsContainer.innerHTML=`<div class="placeholder">Error: ${e.message}</div>`; }
+}
+
+function renderEditCampaigns(campaigns){
+  if(!campaigns.length){ editCampaignsContainer.innerHTML='<div class="placeholder">No campaigns found</div>'; return; }
+  editCampaignsContainer.innerHTML=`
+    <div class="select-actions">
+      <button onclick="selectAll('edit-campaigns-container', true, onEditCampaignChange)">Select All</button>
+      <button onclick="selectAll('edit-campaigns-container', false, onEditCampaignChange)">Deselect All</button>
+    </div>
+    <div class="checkbox-list">
+      ${campaigns.map(c=>`
+        <label class="checkbox-item">
+          <input type="checkbox" value="${c.id}" onchange="onEditCampaignChange()">
+          <span title="${escapeHtml(c.name)}">${escapeHtml(c.name)}</span>
+        </label>`).join('')}
+    </div>`;
+}
+
+async function onEditCampaignChange(){
+  const accountIds=getEditSelectedAccountIds();
+  const campaignIds=getEditSelectedCampaignIds();
+  hideEditPanels();
+  if(!campaignIds.length){ editAdgroupsContainer.innerHTML='<div class="placeholder">Select campaigns first</div>'; return; }
+  editAdgroupsContainer.innerHTML='<div class="loading">Loading ad groups...</div>';
+  try{
+    const resp=await fetch(`/api/adgroups?account_ids=${accountIds.join(',')}&campaign_ids=${campaignIds.join(',')}`);
+    const data=await resp.json();
+    if(!resp.ok) throw new Error(data.detail||'Failed to load ad groups');
+    renderEditAdgroups(data.adgroups);
+  }catch(e){ editAdgroupsContainer.innerHTML=`<div class="placeholder">Error: ${e.message}</div>`; }
+}
+
+function renderEditAdgroups(adgroups){
+  if(!adgroups.length){ editAdgroupsContainer.innerHTML='<div class="placeholder">No ad groups found</div>'; return; }
+  editAdgroupsContainer.innerHTML = adgroups.map(g=>`
+    <label class="checkbox-item">
+      <input type="radio" name="edit_adgroup" value="${g.account_id}|${g.ad_group_id}" onchange="onEditAdgroupChange(this)">
+      <span title="${escapeHtml(g.campaign_name+' / '+g.ad_group_name)}">${escapeHtml(g.ad_group_name)} <small style="color:var(--text-muted)">· ${escapeHtml(g.campaign_name)}</small></span>
+    </label>`).join('');
+}
+
+async function onEditAdgroupChange(radio){
+  const [accountId, adGroupId] = radio.value.split('|');
+  _editContext = { account_id: accountId, ad_group_id: adGroupId, ad_resource_name: null, creatives: [] };
+  editResults.classList.add('hidden');
+  await loadEditCreatives();
+}
+
+async function loadEditCreatives(){
+  const { account_id, ad_group_id } = _editContext;
+  if(!account_id || !ad_group_id) return;
+  hideError(); showLoading();
+  try{
+    const resp=await fetch(`/api/adgroup_creatives?account_id=${account_id}&ad_group_id=${ad_group_id}`);
+    const data=await resp.json();
+    if(!resp.ok) throw new Error(data.detail||'Failed to load creatives');
+    _editContext.ad_resource_name = data.ad_resource_name;
+    _editContext.creatives = data.creatives;
+    renderEditCreatives(data);
+  }catch(e){ showError('Failed to load creatives: '+e.message); hideEditPanels(); }
+  finally{ hideLoading(); }
+}
+
+function renderEditCreatives(data){
+  editCreativesPanel.classList.remove('hidden');
+  editAddPanel.classList.remove('hidden');
+  document.getElementById('edit-creatives-count').textContent = `${data.count} videos`;
+  editCreativesBody.innerHTML = (data.creatives||[]).map(c=>{
+    const label = c.performance_label || 'UNRATED';
+    const cls = 'perf-' + label.toLowerCase();
+    const checked = label === 'LOW' ? 'checked' : '';
+    const name = c.title || c.video_id || c.asset_resource;
+    const nameHtml = c.video_id
+      ? `<a href="https://youtu.be/${encodeURIComponent(c.video_id)}" target="_blank" rel="noopener">${escapeHtml(name)}</a>`
+      : escapeHtml(name);
+    return `<tr>
+      <td style="text-align:center;"><input type="checkbox" class="edit-remove-cb" data-asset="${escapeHtml(c.asset_resource)}" ${checked}></td>
+      <td class="asset-name" title="${escapeHtml(name)}">${nameHtml}</td>
+      <td><span class="perf-badge ${cls}">${escapeHtml(label)}</span></td>
+      <td class="numeric cost-cell">${formatCurrency(c.cost)}</td>
+      <td class="numeric impressions-cell">${formatNumber(c.impressions)}</td>
+      <td class="numeric installs-cell">${formatNumber(c.installs)}</td>
+      <td class="numeric">${(c.cvr||0).toFixed(2)}%</td>
+    </tr>`;
+  }).join('');
+}
+
+async function applyReplace(){
+  if(!_editContext.ad_resource_name){ return showError('Select an ad group first'); }
+  const removeAssets = Array.from(document.querySelectorAll('.edit-remove-cb:checked')).map(cb=>cb.dataset.asset);
+  const addUrls = editAddUrls.value.trim().split('\n').map(s=>s.trim()).filter(Boolean);
+  if(!removeAssets.length && !addUrls.length){ return showError('Nothing to change — check videos to remove or add new URLs'); }
+
+  const remaining = _editContext.creatives.length - removeAssets.length + addUrls.length;
+  if(remaining <= 0){ return showError('You must keep at least one video in the ad group'); }
+  if(!confirm(`Remove ${removeAssets.length} video(s) and add ${addUrls.length}. Continue?`)) return;
+
+  hideError(); showLoading();
+  try{
+    const resp=await fetch('/api/replace_creatives',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
+      account_id: _editContext.account_id,
+      ad_resource_name: _editContext.ad_resource_name,
+      remove_asset_resources: removeAssets,
+      add_youtube_urls: addUrls
+    })});
+    const data=await resp.json();
+    if(!resp.ok) throw new Error(data.detail||'Failed to apply changes');
+    renderEditResults(data);
+    if(data.success){
+      editAddUrls.value='';
+      await loadEditCreatives();  // refresh table to reflect the new state
+    }
+  }catch(e){ showError('Failed to apply changes: '+e.message); }
+  finally{ hideLoading(); }
+}
+
+function renderEditResults(data){
+  editResults.classList.remove('hidden');
+  const logsHtml = data.logs ? `<div class="upload-logs">${data.logs.map(l=>`<div class="log-line">${escapeHtml(l)}</div>`).join('')}</div>` : '';
+  if(data.success){
+    editLog.innerHTML = `<div class="upload-log-item success">
+      <div class="log-header">✓ Updated — removed ${data.removed}, added ${data.added}, total now ${data.total_after}</div>
+      ${logsHtml}
+    </div>`;
+  } else {
+    editLog.innerHTML = `<div class="upload-log-item error">
+      <div class="log-header">✗ ${escapeHtml(data.error||'Failed')}</div>
+      ${logsHtml}
+    </div>`;
+  }
+}
 
 // ==================== DASHBOARD TAB ====================
 let _chartGoogle, _chartApplovin, _chartMintegral, _chartCvr;

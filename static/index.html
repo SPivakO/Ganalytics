@@ -28,6 +28,10 @@
                 <span class="tab-icon">🎬</span>
                 Google Ads Upload Test
             </button>
+            <button class="tab-btn" data-tab="editgroup">
+                <span class="tab-icon">✏️</span>
+                Edit Ad Group
+            </button>
             <button class="tab-btn" data-tab="dashboard">
                 <span class="tab-icon">📊</span>
                 Channels Dashboard
@@ -209,6 +213,85 @@ Shoot web, hook, swing, throw enemies and fight in the air like real Spider-man<
             <div id="upload-results" class="upload-results hidden">
                 <h3>Results</h3>
                 <div id="upload-log"></div>
+            </div>
+        </div>
+
+        <!-- EDIT AD GROUP TAB -->
+        <div id="editgroup-tab" class="tab-content">
+            <div class="filters-panel">
+                <div class="filter-row">
+                    <div class="filter-group">
+                        <label>Accounts</label>
+                        <div class="multi-select" id="edit-accounts-container">
+                            <div class="loading">Loading accounts...</div>
+                        </div>
+                    </div>
+                    <div class="filter-group">
+                        <label>Campaigns</label>
+                        <div class="multi-select" id="edit-campaigns-container">
+                            <div class="placeholder">Select accounts first</div>
+                        </div>
+                    </div>
+                    <div class="filter-group">
+                        <label>Ad Group (pick one)</label>
+                        <div class="multi-select" id="edit-adgroups-container">
+                            <div class="placeholder">Select campaigns first</div>
+                        </div>
+                    </div>
+                </div>
+                <p class="edit-hint">Videos rated <strong>LOW</strong> by Google are pre-checked for removal. Adjust the checkboxes, optionally add new YouTube URLs below, then Apply. Only the ad group's videos change — headlines and descriptions stay intact.</p>
+            </div>
+
+            <div id="edit-creatives-panel" class="results-panel hidden">
+                <div class="results-header">
+                    <div class="results-info"><span id="edit-creatives-count">0 videos</span></div>
+                    <div class="edit-legend">
+                        <span class="perf-badge perf-low">LOW</span>
+                        <span class="perf-badge perf-good">GOOD</span>
+                        <span class="perf-badge perf-best">BEST</span>
+                        <span class="perf-badge perf-learning">LEARNING</span>
+                    </div>
+                </div>
+                <div class="table-container">
+                    <table id="edit-creatives-table">
+                        <thead>
+                            <tr>
+                                <th style="width:70px; text-align:center;">Remove</th>
+                                <th>Creative</th>
+                                <th>Performance</th>
+                                <th class="numeric">Cost</th>
+                                <th class="numeric">Impressions</th>
+                                <th class="numeric">Installs</th>
+                                <th class="numeric">CVR</th>
+                            </tr>
+                        </thead>
+                        <tbody id="edit-creatives-body"></tbody>
+                    </table>
+                </div>
+            </div>
+
+            <div id="edit-add-panel" class="filters-panel hidden" style="margin-top:24px;">
+                <div class="filter-row">
+                    <div class="filter-group full-width">
+                        <label>Add YouTube Video URLs (one per line, optional)</label>
+                        <textarea id="edit-add-urls" class="textarea textarea-small" placeholder="https://www.youtube.com/watch?v=VIDEO_ID
+https://youtu.be/ANOTHER_ID
+..."></textarea>
+                    </div>
+                </div>
+                <div class="filter-row">
+                    <div class="filter-group actions">
+                        <button id="edit-apply-btn" class="btn-primary btn-large">
+                            <span class="btn-icon">💾</span>
+                            Apply Changes
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <div id="edit-results" class="upload-results hidden">
+                <h3>Results</h3>
+                <div id="edit-log"></div>
             </div>
         </div>
 
