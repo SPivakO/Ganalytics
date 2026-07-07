@@ -9,6 +9,7 @@ from pydantic import BaseModel
 from typing import List, Optional, Any
 from google.ads.googleads.client import GoogleAdsClient
 from google.ads.googleads.errors import GoogleAdsException
+from google.api_core import protobuf_helpers
 import pandas as pd
 import re
 import json
@@ -726,9 +727,9 @@ async def generate_report(request: ReportRequest, user: dict[str, Any] = Depends
     
     for account_id in request.account_ids:
         # Get campaign IDs for this account from selected campaign_ids
-        account_campaigns = [c.split('_', 1)[1] if '_' in c else c 
-                           for c in request.campaign_ids 
-                           if c.startswith(account_id)]
+        account_campaigns = [c.split('_', 1)[1] if '_' in c else c
+                           for c in request.campaign_ids
+                           if c.startswith(account_id + '_')]
         
         if not account_campaigns and request.campaign_ids:
             # Check if any campaign_ids match this account
@@ -1171,6 +1172,59 @@ def parse_youtube_url(url: str) -> Optional[str]:
 
 
 
+def resolve_video_assets(client, customer_id, video_ids):
+    """Find existing or create new YouTube video assets.
+
+    Returns (resource_names, logs). Deduplicates by resource name to avoid the
+    'duplicated across operations' error and to keep the final ad payload clean.
+    """
+    logs = []
+    ga_service = client.get_service("GoogleAdsService")
+    asset_service = client.get_service("AssetService")
+    unique_video_ids = list(dict.fromkeys(video_ids))
+    resources = []
+    seen_resources = set()
+
+    for video_id in unique_video_ids:
+        asset_resource = None
+
+        # Try to find existing asset first
+        try:
+            query = f"""
+                SELECT asset.resource_name
+                FROM asset
+                WHERE asset.youtube_video_asset.youtube_video_id = '{video_id}'
+            """
+            response = ga_service.search(customer_id=customer_id, query=query)
+            for row in response:
+                asset_resource = row.asset.resource_name
+                logs.append(f"Found existing asset for {video_id}")
+                break
+        except Exception:
+            pass
+
+        # If not found, create new
+        if not asset_resource:
+            try:
+                asset_operation = client.get_type("AssetOperation")
+                asset = asset_operation.create
+                asset.youtube_video_asset.youtube_video_id = video_id
+                asset_response = asset_service.mutate_assets(
+                    customer_id=customer_id,
+                    operations=[asset_operation]
+                )
+                asset_resource = asset_response.results[0].resource_name
+                logs.append(f"Created video asset: {video_id}")
+            except GoogleAdsException as ex:
+                logs.append(f"Video {video_id}: {ex.failure.errors[0].message}")
+
+        if asset_resource and asset_resource not in seen_resources:
+            seen_resources.add(asset_resource)
+            resources.append(asset_resource)
+
+    return resources, logs
+
+
 @app.get("/api/all_campaigns")
 async def get_all_campaigns(account_ids: str, user: dict[str, Any] = Depends(get_current_user)):
     """Get ALL campaigns for selected accounts (for upload section)"""
@@ -1275,7 +1329,6 @@ def create_adgroup_with_videos(client, customer_id, campaign_id, adgroup_name, v
     
     # Services
     ad_group_service = client.get_service("AdGroupService")
-    asset_service = client.get_service("AssetService")
     ad_group_ad_service = client.get_service("AdGroupAdService")
     
     # 1. Create Ad Group (PAUSED)
@@ -1310,49 +1363,9 @@ def create_adgroup_with_videos(client, customer_id, campaign_id, adgroup_name, v
         }
     
     # 2. Create or find YouTube Video Assets
-    unique_video_ids = list(dict.fromkeys(video_ids))
-    logs.append(f"Processing {len(unique_video_ids)} unique video assets...")
-    created_video_assets = []
-    seen_resources = set()
-    
-    for video_id in unique_video_ids:
-        asset_resource = None
-        
-        # Try to find existing asset first
-        try:
-            ga_service = client.get_service("GoogleAdsService")
-            query = f"""
-                SELECT asset.resource_name 
-                FROM asset 
-                WHERE asset.youtube_video_asset.youtube_video_id = '{video_id}'
-            """
-            response = ga_service.search(customer_id=customer_id, query=query)
-            for row in response:
-                asset_resource = row.asset.resource_name
-                logs.append(f"Found existing asset for {video_id}")
-                break
-        except Exception:
-            pass
-        
-        # If not found, create new
-        if not asset_resource:
-            try:
-                asset_operation = client.get_type("AssetOperation")
-                asset = asset_operation.create
-                asset.youtube_video_asset.youtube_video_id = video_id
-                asset_response = asset_service.mutate_assets(
-                    customer_id=customer_id,
-                    operations=[asset_operation]
-                )
-                asset_resource = asset_response.results[0].resource_name
-                logs.append(f"Created video asset: {video_id}")
-            except GoogleAdsException as ex:
-                logs.append(f"Video {video_id}: {ex.failure.errors[0].message}")
-        
-        if asset_resource and asset_resource not in seen_resources:
-            seen_resources.add(asset_resource)
-            created_video_assets.append(asset_resource)
-    
+    logs.append(f"Processing {len(list(dict.fromkeys(video_ids)))} unique video assets...")
+    created_video_assets, asset_logs = resolve_video_assets(client, customer_id, video_ids)
+    logs.extend(asset_logs)
     logs.append(f"Total video assets: {len(created_video_assets)}")
     
     if not created_video_assets:
@@ -1427,6 +1440,255 @@ def create_adgroup_with_videos(client, customer_id, campaign_id, adgroup_name, v
         "assets_created": len(created_video_assets),
         "success": True,
         "logs": logs
+    }
+
+
+# ==================== EDIT EXISTING AD GROUP SECTION ====================
+
+class ReplaceCreativesRequest(BaseModel):
+    account_id: str
+    ad_resource_name: str  # customers/{cid}/ads/{adId} of the App Ad to update
+    remove_asset_resources: List[str] = []  # YouTube video asset resource names to drop
+    add_youtube_urls: List[str] = []  # New YouTube URLs/IDs to add
+
+
+@app.get("/api/adgroups")
+async def get_adgroups(account_ids: str, campaign_ids: str, user: dict[str, Any] = Depends(get_current_user)):
+    """List ad groups for selected campaigns (Edit Ad Group tab).
+
+    campaign_ids are 'accountId_campaignId' keys (same format as other tabs).
+    """
+    client = get_client()
+    ga_service = client.get_service("GoogleAdsService")
+
+    # Group campaign ids by account
+    campaigns_by_account = {}
+    for cid in campaign_ids.split(','):
+        cid = cid.strip()
+        if not cid:
+            continue
+        parts = cid.split('_', 1)
+        if len(parts) == 2:
+            acc, camp = parts
+            campaigns_by_account.setdefault(acc, []).append(camp)
+
+    results = []
+    for account_id, camp_ids in campaigns_by_account.items():
+        ids_str = ",".join(camp_ids)
+        query = f"""
+            SELECT ad_group.id, ad_group.name, ad_group.status,
+                   campaign.id, campaign.name
+            FROM ad_group
+            WHERE campaign.id IN ({ids_str})
+              AND ad_group.status != 'REMOVED'
+        """
+        try:
+            response = ga_service.search(customer_id=account_id, query=query)
+            for row in response:
+                results.append({
+                    'id': f"{account_id}_{row.ad_group.id}",
+                    'account_id': account_id,
+                    'campaign_id': str(row.campaign.id),
+                    'campaign_name': row.campaign.name,
+                    'ad_group_id': str(row.ad_group.id),
+                    'ad_group_name': row.ad_group.name,
+                    'status': row.ad_group.status.name,
+                })
+        except Exception as e:
+            print(f"[get_adgroups] Error for account {account_id}: {e}")
+            continue
+
+    return {"adgroups": sorted(results, key=lambda x: (x['campaign_name'], x['ad_group_name']))}
+
+
+@app.get("/api/adgroup_creatives")
+async def get_adgroup_creatives(account_id: str, ad_group_id: str, user: dict[str, Any] = Depends(get_current_user)):
+    """Return the App Ad's current YouTube video creatives with Google's
+    performance_label (LOW/GOOD/BEST/LEARNING/PENDING) and lifetime metrics.
+    """
+    client = get_client()
+    ga_service = client.get_service("GoogleAdsService")
+
+    # (a) Authoritative membership: the App Ad and its attached youtube videos.
+    ad_resource_name = None
+    membership = []  # asset resource_names currently on the App Ad (ground truth)
+    try:
+        ad_query = f"""
+            SELECT ad_group_ad.ad.resource_name,
+                   ad_group_ad.ad.app_ad.youtube_videos
+            FROM ad_group_ad
+            WHERE ad_group.id = {ad_group_id}
+              AND ad_group_ad.status != 'REMOVED'
+        """
+        resp = ga_service.search(customer_id=account_id, query=ad_query)
+        for row in resp:
+            vids = list(row.ad_group_ad.ad.app_ad.youtube_videos)
+            # Prefer the ad that actually carries videos; fall back to any App Ad.
+            if vids or not ad_resource_name:
+                ad_resource_name = row.ad_group_ad.ad.resource_name
+            for v in vids:
+                if v.asset and v.asset not in membership:
+                    membership.append(v.asset)
+    except GoogleAdsException as ex:
+        raise HTTPException(status_code=400, detail=f"Failed to read ad: {ex.failure.errors[0].message}")
+
+    if not ad_resource_name:
+        raise HTTPException(
+            status_code=404,
+            detail="No App Ad found in this ad group (only App campaigns are supported)"
+        )
+
+    # (b) performance_label + lifetime metrics per youtube asset (no segments.date
+    #     so we get the current label and all-time stats for every linked asset).
+    stats = {}
+    try:
+        view_query = f"""
+            SELECT ad_group_ad_asset_view.asset,
+                   ad_group_ad_asset_view.performance_label,
+                   asset.youtube_video_asset.youtube_video_id,
+                   asset.youtube_video_asset.youtube_video_title,
+                   asset.name,
+                   metrics.cost_micros, metrics.impressions, metrics.conversions
+            FROM ad_group_ad_asset_view
+            WHERE ad_group.id = {ad_group_id}
+              AND ad_group_ad_asset_view.field_type = 'YOUTUBE_VIDEO'
+        """
+        resp = ga_service.search(customer_id=account_id, query=view_query)
+        for row in resp:
+            av = row.ad_group_ad_asset_view
+            yt = row.asset.youtube_video_asset
+            impressions = row.metrics.impressions or 0
+            installs = row.metrics.conversions or 0
+            stats[av.asset] = {
+                'performance_label': av.performance_label.name,
+                'video_id': yt.youtube_video_id,
+                'title': yt.youtube_video_title or row.asset.name or '',
+                'cost': round((row.metrics.cost_micros / 1_000_000) if row.metrics.cost_micros else 0.0, 2),
+                'impressions': int(impressions),
+                'installs': int(round(installs)),
+                'cvr': round((installs / impressions * 100) if impressions else 0.0, 3),
+            }
+    except GoogleAdsException:
+        pass
+
+    creatives = []
+    for asset_res in membership:
+        s = stats.get(asset_res)
+        if s:
+            creatives.append({'asset_resource': asset_res, **s})
+        else:
+            creatives.append({
+                'asset_resource': asset_res,
+                'performance_label': 'UNRATED',
+                'video_id': '',
+                'title': '',
+                'cost': 0.0, 'impressions': 0, 'installs': 0, 'cvr': 0.0,
+            })
+
+    # Surface removal candidates first: LOW on top, then by cost desc.
+    order = {'LOW': 0, 'LEARNING': 1, 'UNRATED': 2, 'PENDING': 3, 'GOOD': 4, 'BEST': 5}
+    creatives.sort(key=lambda c: (order.get(c['performance_label'], 9), -c['cost']))
+
+    return {
+        "ad_resource_name": ad_resource_name,
+        "account_id": account_id,
+        "ad_group_id": ad_group_id,
+        "creatives": creatives,
+        "count": len(creatives),
+    }
+
+
+@app.post("/api/replace_creatives")
+async def replace_creatives(request: ReplaceCreativesRequest, user: dict[str, Any] = Depends(get_current_user)):
+    """Remove selected YouTube videos from an existing App Ad and/or add new ones.
+
+    App Ads are mutable only through AdService (not AdGroupAdService). The
+    youtube_videos repeated field is replaced wholesale on update, so we send the
+    full desired final list. The update_mask isolates app_ad.youtube_videos, so
+    headlines/descriptions/images are left untouched.
+    """
+    client = get_client()
+    ga_service = client.get_service("GoogleAdsService")
+    customer_id = request.account_id
+    logs = []
+
+    # 1. Read the current youtube videos of this ad (authoritative membership).
+    current = []
+    try:
+        ad_query = f"""
+            SELECT ad_group_ad.ad.resource_name,
+                   ad_group_ad.ad.app_ad.youtube_videos
+            FROM ad_group_ad
+            WHERE ad_group_ad.ad.resource_name = '{request.ad_resource_name}'
+        """
+        resp = ga_service.search(customer_id=customer_id, query=ad_query)
+        for row in resp:
+            for v in row.ad_group_ad.ad.app_ad.youtube_videos:
+                if v.asset and v.asset not in current:
+                    current.append(v.asset)
+    except GoogleAdsException as ex:
+        raise HTTPException(status_code=400, detail=f"Failed to read ad: {ex.failure.errors[0].message}")
+
+    if not current:
+        raise HTTPException(status_code=404, detail="Ad not found or has no YouTube videos")
+
+    logs.append(f"Current videos: {len(current)}")
+
+    # 2. Keep = current − removed.
+    remove_set = set(request.remove_asset_resources)
+    keep = [r for r in current if r not in remove_set]
+    removed_count = len(current) - len(keep)
+    logs.append(f"Removing {removed_count} video(s)")
+
+    # 3. Resolve new YouTube URLs to asset resources.
+    video_ids = []
+    for url in request.add_youtube_urls:
+        vid = parse_youtube_url(url)
+        if vid:
+            video_ids.append(vid)
+    added = []
+    if video_ids:
+        added, asset_logs = resolve_video_assets(client, customer_id, video_ids)
+        logs.extend(asset_logs)
+    logs.append(f"Adding {len(added)} video(s)")
+
+    # 4. Final list = dedupe(keep + added); validate bounds.
+    final = list(dict.fromkeys(keep + added))
+    if not final:
+        raise HTTPException(status_code=400, detail="Result would have 0 videos — an App Ad needs at least one video")
+    if len(final) > 20:
+        raise HTTPException(status_code=400, detail=f"Result would have {len(final)} videos — App Ad limit is 20")
+
+    # 5. Update the ad via AdService with an isolated update_mask.
+    ad_service = client.get_service("AdService")
+    ad_operation = client.get_type("AdOperation")
+    ad = ad_operation.update
+    ad.resource_name = request.ad_resource_name
+    for r in final:
+        video_asset = client.get_type("AdVideoAsset")
+        video_asset.asset = r
+        ad.app_ad.youtube_videos.append(video_asset)
+    client.copy_from(ad_operation.update_mask, protobuf_helpers.field_mask(None, ad._pb))
+
+    try:
+        ad_service.mutate_ads(customer_id=customer_id, operations=[ad_operation])
+        logs.append(f"Updated ad — total videos now: {len(final)}")
+    except GoogleAdsException as ex:
+        error_msg = "; ".join(e.message for e in ex.failure.errors)
+        logs.append(f"Update failed: {error_msg}")
+        return {
+            "success": False,
+            "error": error_msg,
+            "logs": logs,
+        }
+
+    return {
+        "success": True,
+        "ad_resource_name": request.ad_resource_name,
+        "removed": removed_count,
+        "added": len(added),
+        "total_after": len(final),
+        "logs": logs,
     }
 
 
