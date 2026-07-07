@@ -91,6 +91,8 @@ jobs:
           IMAGE_NAME: ${{ env.IMAGE_NAME }}
           IMAGE_TAG: ${{ env.IMAGE_TAG }}
           REPO_OWNER: ${{ github.repository_owner }}
+          REGISTRY_USER: ${{ github.actor }}
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ENV_VARS: "OAUTH_GOOGLE_CLIENT_ID OAUTH_GOOGLE_CLIENT_SECRET OAUTH_SECRET_KEY OAUTH_REDIRECT_URI ADS_DEVELOPER_TOKEN ADS_CLIENT_ID ADS_CLIENT_SECRET ADS_REFRESH_TOKEN ADS_LOGIN_CUSTOMER_ID ADS_USE_PROTO_PLUS ADJUST_API_TOKEN"
           OAUTH_GOOGLE_CLIENT_ID: ${{ secrets.OAUTH_GOOGLE_CLIENT_ID }}
           OAUTH_GOOGLE_CLIENT_SECRET: ${{ secrets.OAUTH_GOOGLE_CLIENT_SECRET }}
@@ -108,7 +110,7 @@ jobs:
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SERVER_SSH_KEY }}
           port: ${{ secrets.SERVER_PORT || 22 }}
-          envs: REGISTRY,IMAGE_NAME,IMAGE_TAG,REPO_OWNER,ENV_VARS,OAUTH_GOOGLE_CLIENT_ID,OAUTH_GOOGLE_CLIENT_SECRET,OAUTH_SECRET_KEY,OAUTH_REDIRECT_URI,ADS_DEVELOPER_TOKEN,ADS_CLIENT_ID,ADS_CLIENT_SECRET,ADS_REFRESH_TOKEN,ADS_LOGIN_CUSTOMER_ID,ADS_USE_PROTO_PLUS,ADJUST_API_TOKEN
+          envs: REGISTRY,IMAGE_NAME,IMAGE_TAG,REPO_OWNER,REGISTRY_USER,REGISTRY_TOKEN,ENV_VARS,OAUTH_GOOGLE_CLIENT_ID,OAUTH_GOOGLE_CLIENT_SECRET,OAUTH_SECRET_KEY,OAUTH_REDIRECT_URI,ADS_DEVELOPER_TOKEN,ADS_CLIENT_ID,ADS_CLIENT_SECRET,ADS_REFRESH_TOKEN,ADS_LOGIN_CUSTOMER_ID,ADS_USE_PROTO_PLUS,ADJUST_API_TOKEN
           script: |
             set -e
             mkdir -p /opt/ganalytics
@@ -123,8 +125,9 @@ jobs:
               echo "$var=$value" >> .env
             done
 
-            # Pull latest image from GHCR
+            # Pull latest image from GHCR (log in first — the image is private)
             REPO_OWNER_LOWER=$(echo ${REPO_OWNER} | tr '[:upper:]' '[:lower:]')
+            echo "${REGISTRY_TOKEN}" | docker login ${REGISTRY} -u "${REGISTRY_USER}" --password-stdin
             docker pull ${REGISTRY}/${REPO_OWNER_LOWER}/${IMAGE_NAME}:${IMAGE_TAG}
             docker tag ${REGISTRY}/${REPO_OWNER_LOWER}/${IMAGE_NAME}:${IMAGE_TAG} ${IMAGE_NAME}:latest
 
