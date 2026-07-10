@@ -7,7 +7,6 @@ let state = {
   sortDirection: 'desc',
   showAccount: false,
   showCampaign: true,
-  dateRange: { start: null, end: null },  // global period, drives every tab
   dashboard: {
     google: null,
     applovin: null,
@@ -15,24 +14,12 @@ let state = {
   }
 };
 
-// Per-picker "Show all" flags (default: only ENABLED entities are listed)
-let pickerFlags = {
-  reportCampaigns: false,
-  reportAdgroups: false,
-  uploadCampaigns: false,
-  editCampaigns: false,
-  editAdgroups: false,
-  srcCampaigns: false,
-  srcAdgroups: false,
-  dstCampaigns: false,
-  dstAdgroups: false
-};
-
 // Reports DOM
 const accountsContainer = document.getElementById('accounts-container');
 const campaignsContainer = document.getElementById('campaigns-container');
-const reportAdgroupsGroup = document.getElementById('report-adgroups-group');
-const reportAdgroupsContainer = document.getElementById('report-adgroups-container');
+const testDateInput = document.getElementById('test-date');
+const startDateInput = document.getElementById('start-date');
+const endDateInput = document.getElementById('end-date');
 const loadBtn = document.getElementById('load-btn');
 const downloadBtn = document.getElementById('download-btn');
 const resultsPanel = document.getElementById('results-panel');
@@ -43,6 +30,7 @@ const groupByCampaignCheckbox = document.getElementById('group-by-campaign');
 
 // Dashboard DOM
 const dashPlatformSelect = document.getElementById('dash-platform');
+// Group by removed - only daily supported
 const dashAppSelect = document.getElementById('dash-app');
 const dashAccountsToggle = document.getElementById('dash-accounts-toggle');
 const dashAccountsMenu = document.getElementById('dash-accounts-menu');
@@ -54,10 +42,11 @@ const listGoogleEl = document.getElementById('list-google');
 const listApplovinEl = document.getElementById('list-applovin');
 const listMintegralEl = document.getElementById('list-mintegral');
 const chartCvrEl = document.getElementById('chart-cvr');
+const dashDateRangeInput = document.getElementById('dash-date-range');
 
 // Dashboard accounts state
 let dashAccountsLoaded = false;
-let globalDatePicker = null;
+let dashDatePicker = null;
 
 // Upload DOM
 const uploadAccountsContainer = document.getElementById('upload-accounts-container');
@@ -113,51 +102,26 @@ const errorMessage = document.getElementById('error-message');
 
 // Initialize
 document.addEventListener('DOMContentLoaded', () => {
-  initializeGlobalDates();
+  initializeDates();
   initializeTabs();
   loadAccounts();
   setupEventListeners();
   initializeDashboardDefaults();
+  initializeDashboardDates();
 });
 
+function initializeDates() {
+  const now = new Date();
+  const firstDay = new Date(now.getFullYear(), now.getMonth(), 1);
+  const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+  startDateInput.value = formatDate(firstDay);
+  endDateInput.value = formatDate(lastDay);
+}
 function formatDate(d){
   // Build YYYY-MM-DD from local parts. Using toISOString() here shifts the date
   // to UTC and rolls back a day for timezones east of UTC.
   const y=d.getFullYear(), m=String(d.getMonth()+1).padStart(2,'0'), day=String(d.getDate()).padStart(2,'0');
   return `${y}-${m}-${day}`;
-}
-
-// ==================== GLOBAL DATE RANGE ====================
-function initializeGlobalDates(){
-  const input = document.getElementById('global-date-range');
-  const end = new Date();
-  const start = new Date();
-  start.setDate(end.getDate() - 6);  // last 7 days including today
-  state.dateRange = { start: formatDate(start), end: formatDate(end) };
-  if (input && window.flatpickr) {
-    globalDatePicker = flatpickr(input, {
-      mode: 'range',
-      dateFormat: 'Y-m-d',
-      defaultDate: [start, end],
-      locale: { rangeSeparator: ' — ' },
-      onChange: (dates) => {
-        if (dates.length === 2) {
-          state.dateRange = { start: formatDate(dates[0]), end: formatDate(dates[1]) };
-          onGlobalDatesChanged();
-        }
-      }
-    });
-  } else if (input) {
-    input.value = `${state.dateRange.start} — ${state.dateRange.end}`;
-  }
-}
-
-function onGlobalDatesChanged(){
-  // Refresh already-populated views that depend on the period
-  if (getSelectedAccountIds().length) onAccountChange();
-  if (_editContext.ad_group_id) loadEditCreatives();
-  if (_migrate.src.ad_group_id) loadMigrateCreatives('src');
-  if (_migrate.dst.ad_group_id) loadMigrateCreatives('dst');
 }
 
 function initializeTabs(){
@@ -175,11 +139,12 @@ function initializeTabs(){
 function setupEventListeners(){
   document.querySelectorAll('input[name="adgroup_type"]').forEach(r=>{
     r.addEventListener('change', e=>{
-      const isTest = e.target.value === 'test';
-      reportAdgroupsGroup.classList.toggle('hidden', !isTest);
-      if (isTest) loadReportAdgroups();
+      testDateInput.disabled = e.target.value !== 'test';
+      if(e.target.value==='test') testDateInput.focus();
     });
   });
+  startDateInput.addEventListener('change', onDateChange);
+  endDateInput.addEventListener('change', onDateChange);
   loadBtn.addEventListener('click', loadReport);
   downloadBtn.addEventListener('click', downloadCSV);
   uploadBtn.addEventListener('click', createTestAdGroups);
@@ -188,130 +153,7 @@ function setupEventListeners(){
   if (migrateApplyBtn) migrateApplyBtn.addEventListener('click', applyMigration);
 }
 
-// ==================== PICKER COMPONENT ====================
-// createPicker(container, opts) renders a searchable list with a sticky header.
-// opts: items [{id,name,status?,hint?}], multi, searchable, showAllToggle, showAll,
-//       selectAllDefault, selected [], emptyText, onChange(ids), onShowAllChange(bool)
-function createPicker(container, opts){
-  const o = Object.assign({
-    items: [], multi: true, searchable: true,
-    showAllToggle: false, showAll: false,
-    selectAllDefault: false, selected: [],
-    emptyText: 'No items', onChange: null, onShowAllChange: null
-  }, opts);
-
-  const selected = new Set((o.selected || []).map(String));
-  if (o.selectAllDefault && selected.size === 0) o.items.forEach(i => selected.add(String(i.id)));
-  const radioName = 'pk_' + container.id;
-  let filter = '';
-
-  container.classList.add('picker');
-  container.innerHTML = `
-    <div class="picker-head">
-      ${o.searchable ? '<input type="search" class="picker-search" placeholder="Search...">' : ''}
-      <div class="picker-head-row">
-        ${o.multi ? '<div class="picker-actions"><button type="button" data-act="all">All</button><button type="button" data-act="none">None</button></div>' : '<div class="picker-actions"></div>'}
-        ${o.showAllToggle ? `<label class="picker-showall"><input type="checkbox" ${o.showAll ? 'checked' : ''}> Show all</label>` : ''}
-        <span class="picker-count"></span>
-      </div>
-    </div>
-    <div class="picker-list"></div>`;
-
-  const listEl = container.querySelector('.picker-list');
-  const countEl = container.querySelector('.picker-count');
-  const searchEl = container.querySelector('.picker-search');
-
-  function updateCount(){
-    countEl.textContent = o.multi ? `${selected.size} / ${o.items.length}` : `${o.items.length}`;
-  }
-
-  function renderList(){
-    const f = filter.trim().toLowerCase();
-    const shown = o.items.filter(i => !f || (i.name || '').toLowerCase().includes(f) || (i.hint || '').toLowerCase().includes(f));
-    if (!shown.length) {
-      listEl.innerHTML = `<div class="placeholder">${escapeHtml(o.items.length ? 'No matches' : o.emptyText)}</div>`;
-      updateCount();
-      return;
-    }
-    listEl.innerHTML = shown.map(i => {
-      const id = String(i.id);
-      const paused = i.status && i.status !== 'ENABLED';
-      const type = o.multi ? 'checkbox' : 'radio';
-      const nameAttr = o.multi ? '' : `name="${radioName}"`;
-      return `<label class="picker-item${paused ? ' is-paused' : ''}">
-        <input type="${type}" ${nameAttr} value="${escapeHtml(id)}" ${selected.has(id) ? 'checked' : ''}>
-        <span class="picker-item-name" title="${escapeHtml(i.name || '')}">${escapeHtml(i.name || '')}</span>
-        ${i.hint ? `<span class="picker-item-hint" title="${escapeHtml(i.hint)}">${escapeHtml(i.hint)}</span>` : ''}
-        ${paused ? `<span class="picker-item-status">${escapeHtml(i.status)}</span>` : ''}
-      </label>`;
-    }).join('');
-    updateCount();
-  }
-
-  function emit(){ if (o.onChange) o.onChange(Array.from(selected)); }
-
-  listEl.addEventListener('change', (e) => {
-    const input = e.target;
-    if (!input || input.value === undefined) return;
-    if (o.multi) {
-      if (input.checked) selected.add(input.value); else selected.delete(input.value);
-    } else {
-      selected.clear();
-      if (input.checked) selected.add(input.value);
-    }
-    updateCount();
-    emit();
-  });
-
-  if (searchEl) {
-    searchEl.addEventListener('input', () => { filter = searchEl.value; renderList(); });
-    // Keep picker scroll from stealing the search focus
-    searchEl.addEventListener('click', (e) => e.stopPropagation());
-  }
-
-  container.querySelectorAll('.picker-actions button').forEach(btn => {
-    btn.addEventListener('click', () => {
-      if (btn.dataset.act === 'all') o.items.forEach(i => selected.add(String(i.id)));
-      else selected.clear();
-      renderList();
-      emit();
-    });
-  });
-
-  const showAllCb = container.querySelector('.picker-showall input');
-  if (showAllCb) {
-    showAllCb.addEventListener('change', () => {
-      if (o.onShowAllChange) o.onShowAllChange(showAllCb.checked);
-    });
-  }
-
-  renderList();
-
-  const api = {
-    getSelected: () => Array.from(selected),
-    clear: () => { selected.clear(); renderList(); }
-  };
-  container._picker = api;
-  return api;
-}
-
-function pickerSelected(container){
-  return (container && container._picker) ? container._picker.getSelected() : [];
-}
-
-function setPickerPlaceholder(container, text){
-  if (!container) return;
-  delete container._picker;
-  container.innerHTML = `<div class="placeholder">${escapeHtml(text)}</div>`;
-}
-
-function setPickerLoading(container, text){
-  if (!container) return;
-  delete container._picker;
-  container.innerHTML = `<div class="loading">${escapeHtml(text || 'Loading...')}</div>`;
-}
-
-// ==================== ACCOUNTS (shared) ====================
+// ==================== REPORTS TAB ====================
 async function loadAccounts(){
   try{
     const resp = await fetch('/api/accounts');
@@ -323,96 +165,86 @@ async function loadAccounts(){
     }
     const data = JSON.parse(text);
     state.accounts = data.accounts;
-    const items = state.accounts.map(a => ({ id: a.id, name: a.name }));
-    createPicker(accountsContainer, { items, onChange: () => onAccountChange() });
-    createPicker(uploadAccountsContainer, { items, onChange: () => onUploadAccountChange() });
-    createPicker(editAccountsContainer, { items, onChange: () => onEditAccountChange() });
-    createPicker(migratePanes.src.accounts, { items, onChange: () => onMigrateAccountChange('src') });
-    createPicker(migratePanes.dst.accounts, { items, onChange: () => onMigrateAccountChange('dst') });
+    renderAccounts(accountsContainer,'onAccountChange');
+    renderAccounts(uploadAccountsContainer,'onUploadAccountChange');
+    renderAccounts(editAccountsContainer,'onEditAccountChange');
+    renderAccounts(migratePanes.src.accounts,'onMigrateSrcAccountChange');
+    renderAccounts(migratePanes.dst.accounts,'onMigrateDstAccountChange');
   }catch(e){showError('Failed to load accounts: '+e.message);}
 }
-
-// ==================== REPORTS TAB ====================
-function getSelectedAccountIds(){ return pickerSelected(accountsContainer); }
-function getSelectedCampaignIds(){ return pickerSelected(campaignsContainer); }
-function isTestSelected(){
-  const r = document.querySelector('input[name="adgroup_type"]:checked');
-  return r && r.value === 'test';
+function renderAccounts(container, handler){
+  container.innerHTML = `
+    <div class="select-actions">
+      <button onclick="selectAll('${container.id}', true, ${handler})">Select All</button>
+      <button onclick="selectAll('${container.id}', false, ${handler})">Deselect All</button>
+    </div>
+    <div class="checkbox-list">
+      ${state.accounts.map(acc=>`
+        <label class="checkbox-item">
+          <input type="checkbox" value="${acc.id}" data-name="${escapeHtml(acc.name)}" onchange="${handler}()">
+          <span title="${acc.name}">${acc.name}</span>
+        </label>
+      `).join('')}
+    </div>`;
 }
-
+function selectAll(containerId, select, handler){
+  const c=document.getElementById(containerId);
+  c.querySelectorAll('input[type="checkbox"]').forEach(cb=>cb.checked=select);
+  if(handler) handler();
+}
+function selectAllAccounts(select){selectAll('accounts-container',select,onAccountChange);}
+function onDateChange(){ if(getSelectedAccountIds().length>0) onAccountChange(); }
 async function onAccountChange(){
-  const selectedIds = getSelectedAccountIds();
-  if(!selectedIds.length){
-    setPickerPlaceholder(campaignsContainer, 'Select accounts first');
-    setPickerPlaceholder(reportAdgroupsContainer, 'Select campaigns first');
-    state.campaigns = [];
-    return;
-  }
-  const { start: sd, end: ed } = state.dateRange;
-  setPickerLoading(campaignsContainer, 'Loading campaigns with spend...');
+  const selectedIds=getSelectedAccountIds();
+  if(!selectedIds.length){campaignsContainer.innerHTML='<div class="placeholder">Select accounts first</div>'; state.campaigns=[]; return;}
+  const sd=startDateInput.value, ed=endDateInput.value;
+  if(!sd||!ed){campaignsContainer.innerHTML='<div class="placeholder">Select date range first</div>'; return;}
+  campaignsContainer.innerHTML='<div class="loading">Loading campaigns with spend...</div>';
   try{
-    const resp = await fetch(`/api/campaigns?account_ids=${selectedIds.join(',')}&start_date=${sd}&end_date=${ed}&show_all=${pickerFlags.reportCampaigns}`);
-    const data = await resp.json();
+    const resp=await fetch(`/api/campaigns?account_ids=${selectedIds.join(',')}&start_date=${sd}&end_date=${ed}`);
+    const data=await resp.json();
     if(!resp.ok) throw new Error(data.detail||'Failed to load campaigns');
-    state.campaigns = data.campaigns;
-    createPicker(campaignsContainer, {
-      items: state.campaigns.map(c => ({ id: c.id, name: c.name, status: c.status })),
-      selectAllDefault: true,
-      showAllToggle: true,
-      showAll: pickerFlags.reportCampaigns,
-      emptyText: 'No campaigns found',
-      onChange: () => { if (isTestSelected()) loadReportAdgroups(); },
-      onShowAllChange: (v) => { pickerFlags.reportCampaigns = v; onAccountChange(); }
-    });
-    if (isTestSelected()) loadReportAdgroups();
+    state.campaigns=data.campaigns;
+    renderCampaigns(campaignsContainer);
   }catch(e){
-    setPickerPlaceholder(campaignsContainer, `Error: ${e.message}`);
+    campaignsContainer.innerHTML=`<div class="placeholder">Error: ${e.message}</div>`;
   }
 }
-
-async function loadReportAdgroups(){
-  const accountIds = getSelectedAccountIds();
-  const campaignIds = getSelectedCampaignIds();
-  if(!campaignIds.length){
-    setPickerPlaceholder(reportAdgroupsContainer, 'Select campaigns first');
-    return;
-  }
-  setPickerLoading(reportAdgroupsContainer, 'Loading ad groups...');
-  try{
-    const resp = await fetch(`/api/adgroups?account_ids=${accountIds.join(',')}&campaign_ids=${campaignIds.join(',')}&show_all=${pickerFlags.reportAdgroups}`);
-    const data = await resp.json();
-    if(!resp.ok) throw new Error(data.detail||'Failed to load ad groups');
-    createPicker(reportAdgroupsContainer, {
-      items: data.adgroups.map(g => ({
-        id: g.id, name: g.ad_group_name, hint: g.campaign_name, status: g.status
-      })),
-      showAllToggle: true,
-      showAll: pickerFlags.reportAdgroups,
-      emptyText: 'No ad groups found',
-      onShowAllChange: (v) => { pickerFlags.reportAdgroups = v; loadReportAdgroups(); }
-    });
-  }catch(e){
-    setPickerPlaceholder(reportAdgroupsContainer, `Error: ${e.message}`);
-  }
+function renderCampaigns(container){
+  if(!state.campaigns.length){container.innerHTML='<div class="placeholder">No campaigns found</div>'; return;}
+  container.innerHTML=`
+    <div class="select-actions">
+      <button onclick="selectAllCampaigns('${container.id}', true)">Select All</button>
+      <button onclick="selectAllCampaigns('${container.id}', false)">Deselect All</button>
+    </div>
+    <div class="checkbox-list">
+      ${state.campaigns.map(c=>`
+        <label class="checkbox-item">
+          <input type="checkbox" value="${c.id}" checked>
+          <span title="${c.name}">${c.name}</span>
+        </label>
+      `).join('')}
+    </div>`;
 }
+function selectAllCampaigns(id,select){const c=document.getElementById(id); c.querySelectorAll('input[type="checkbox"]').forEach(cb=>cb.checked=select);}
+function getSelectedAccountIds(){return Array.from(accountsContainer.querySelectorAll('input[type="checkbox"]:checked')).map(cb=>cb.value);}
+function getSelectedCampaignIds(){return Array.from(campaignsContainer.querySelectorAll('input[type="checkbox"]:checked')).map(cb=>cb.value);}
 
 async function loadReport(){
-  const accountIds = getSelectedAccountIds();
-  const campaignIds = getSelectedCampaignIds();
-  const adgroupType = document.querySelector('input[name="adgroup_type"]:checked').value;
-  const adGroupIds = adgroupType === 'test' ? pickerSelected(reportAdgroupsContainer) : [];
-  const { start: sd, end: ed } = state.dateRange;
-  const groupByAccount = groupByAccountCheckbox.checked;
-  const groupByCampaign = groupByCampaignCheckbox.checked;
+  const accountIds=getSelectedAccountIds();
+  const campaignIds=getSelectedCampaignIds();
+  const adgroupType=document.querySelector('input[name="adgroup_type"]:checked').value;
+  const testDate=testDateInput.value;
+  const sd=startDateInput.value, ed=endDateInput.value;
+  const groupByAccount=groupByAccountCheckbox.checked;
+  const groupByCampaign=groupByCampaignCheckbox.checked;
   if(!accountIds.length){showError('Please select at least one account'); return;}
   if(!sd||!ed){showError('Please select date range'); return;}
-  if(adgroupType==='test' && !adGroupIds.length){showError('Please select at least one test ad group'); return;}
+  if(adgroupType==='test' && !testDate){showError('Please enter test date (e.g. 181225)'); return;}
   hideError(); showLoading();
   try{
     const resp=await fetch('/api/report',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
-      account_ids:accountIds,campaign_ids:campaignIds,adgroup_type:adgroupType,
-      ad_group_ids:adGroupIds.length?adGroupIds:null,
-      start_date:sd,end_date:ed,group_by_account:groupByAccount,group_by_campaign:groupByCampaign
+      account_ids:accountIds,campaign_ids:campaignIds,adgroup_type:adgroupType,test_date:testDate,start_date:sd,end_date:ed,group_by_account:groupByAccount,group_by_campaign:groupByCampaign
     })});
     const data=await resp.json();
     if(!resp.ok) throw new Error(data.detail||'Failed to load report');
@@ -423,7 +255,6 @@ async function loadReport(){
   }catch(e){showError('Failed to load report: '+e.message);}
   finally{hideLoading();}
 }
-
 function renderResults(data){
   document.getElementById('results-count').textContent=`${data.count} creatives`;
   document.getElementById('total-cost').textContent=formatCurrency(data.totals.cost);
@@ -501,36 +332,55 @@ function downloadCSV(){
   const csv=[headers.join(','), ...state.reportData.map(r=>headers.map(h=>{
     let v=r[h]||''; if(typeof v==='string') v=`"${v.replace(/"/g,'""')}"`; return v;
   }).join(','))].join('\n');
-  const blob=new Blob(['﻿'+csv],{type:'text/csv;charset=utf-8;'});
+  const blob=new Blob(['\ufeff'+csv],{type:'text/csv;charset=utf-8;'});
   const url=URL.createObjectURL(blob);
-  const link=document.createElement('a'); link.href=url; link.download=`youtube_assets_${state.dateRange.start}_${state.dateRange.end}.csv`; link.click(); URL.revokeObjectURL(url);
+  const link=document.createElement('a'); link.href=url; link.download=`youtube_assets_${startDateInput.value}_${endDateInput.value}.csv`; link.click(); URL.revokeObjectURL(url);
 }
 
 // ==================== UPLOAD TAB ====================
-function getUploadSelectedAccountIds(){ return pickerSelected(uploadAccountsContainer); }
-function getUploadSelectedCampaignIds(){ return pickerSelected(uploadCampaignsContainer); }
-
 async function onUploadAccountChange() {
   const selectedIds = getUploadSelectedAccountIds();
   if (!selectedIds.length) {
-    setPickerPlaceholder(uploadCampaignsContainer, 'Select accounts first');
+    uploadCampaignsContainer.innerHTML = '<div class="placeholder">Select accounts first</div>';
     return;
   }
-  setPickerLoading(uploadCampaignsContainer, 'Loading campaigns...');
+  uploadCampaignsContainer.innerHTML = '<div class="loading">Loading campaigns...</div>';
   try {
-    const response = await fetch(`/api/all_campaigns?account_ids=${selectedIds.join(',')}&show_all=${pickerFlags.uploadCampaigns}`);
+    const response = await fetch(`/api/all_campaigns?account_ids=${selectedIds.join(',')}`);
     const data = await response.json();
     if (!response.ok) throw new Error(data.detail || 'Failed to load campaigns');
-    createPicker(uploadCampaignsContainer, {
-      items: data.campaigns.map(c => ({ id: c.id, name: c.name, status: c.status })),
-      showAllToggle: true,
-      showAll: pickerFlags.uploadCampaigns,
-      emptyText: 'No campaigns found',
-      onShowAllChange: (v) => { pickerFlags.uploadCampaigns = v; onUploadAccountChange(); }
-    });
+    renderUploadCampaigns(data.campaigns);
   } catch (e) {
-    setPickerPlaceholder(uploadCampaignsContainer, `Error: ${e.message}`);
+    uploadCampaignsContainer.innerHTML = `<div class="placeholder">Error: ${e.message}</div>`;
   }
+}
+
+function renderUploadCampaigns(campaigns) {
+  if (!campaigns.length) {
+    uploadCampaignsContainer.innerHTML = '<div class="placeholder">No campaigns found</div>';
+    return;
+  }
+  uploadCampaignsContainer.innerHTML = `
+    <div class="select-actions">
+      <button onclick="selectAllCampaigns('upload-campaigns-container', true)">Select All</button>
+      <button onclick="selectAllCampaigns('upload-campaigns-container', false)">Deselect All</button>
+    </div>
+    <div class="checkbox-list">
+      ${campaigns.map(camp => `
+        <label class="checkbox-item">
+          <input type="checkbox" value="${camp.id}">
+          <span title="${camp.name}">${camp.name}</span>
+        </label>
+      `).join('')}
+    </div>
+  `;
+}
+
+function getUploadSelectedAccountIds() {
+  return Array.from(uploadAccountsContainer.querySelectorAll('input[type="checkbox"]:checked')).map(cb => cb.value);
+}
+function getUploadSelectedCampaignIds() {
+  return Array.from(uploadCampaignsContainer.querySelectorAll('input[type="checkbox"]:checked')).map(cb => cb.value);
 }
 
 async function createTestAdGroups() {
@@ -539,7 +389,7 @@ async function createTestAdGroups() {
   const youtubeUrls = youtubeUrlsInput.value.trim().split('\n').filter(url => url.trim());
   const headlines = headlinesInput.value.trim().split('\n').filter(h => h.trim()).slice(0, 5);
   const descriptions = descriptionsInput.value.trim().split('\n').filter(d => d.trim()).slice(0, 5);
-
+  
   if (!campaignIds.length) return showError('Please select at least one campaign');
   if (!adgroupName) return showError('Please enter ad group name');
   if (!youtubeUrls.length) return showError('Please enter at least one YouTube URL');
@@ -551,9 +401,9 @@ async function createTestAdGroups() {
     const resp = await fetch('/api/upload', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        campaign_ids: campaignIds,
-        adgroup_name: adgroupName,
+      body: JSON.stringify({ 
+        campaign_ids: campaignIds, 
+        adgroup_name: adgroupName, 
         youtube_urls: youtubeUrls,
         headlines: headlines,
         descriptions: descriptions
@@ -606,16 +456,11 @@ function hideLoading(){loadingOverlay.classList.add('hidden'); loadBtn.disabled=
 function showError(m){errorMessage.textContent=m; errorMessage.classList.remove('hidden');}
 function hideError(){errorMessage.classList.add('hidden');}
 
-function creativesDateParams(){
-  const { start, end } = state.dateRange;
-  return (start && end) ? `&start_date=${start}&end_date=${end}` : '';
-}
-
 // ==================== EDIT AD GROUP TAB ====================
 let _editContext = { account_id: null, ad_group_id: null, ad_resource_name: null, creatives: [] };
 
-function getEditSelectedAccountIds(){ return pickerSelected(editAccountsContainer); }
-function getEditSelectedCampaignIds(){ return pickerSelected(editCampaignsContainer); }
+function getEditSelectedAccountIds(){ return Array.from(editAccountsContainer.querySelectorAll('input[type="checkbox"]:checked')).map(cb=>cb.value); }
+function getEditSelectedCampaignIds(){ return Array.from(editCampaignsContainer.querySelectorAll('input[type="checkbox"]:checked')).map(cb=>cb.value); }
 
 function hideEditPanels(){
   editCreativesPanel.classList.add('hidden');
@@ -625,53 +470,59 @@ function hideEditPanels(){
 
 async function onEditAccountChange(){
   const ids = getEditSelectedAccountIds();
-  setPickerPlaceholder(editAdgroupsContainer, 'Select campaigns first');
-  _editContext = { account_id: null, ad_group_id: null, ad_resource_name: null, creatives: [] };
+  editAdgroupsContainer.innerHTML = '<div class="placeholder">Select campaigns first</div>';
   hideEditPanels();
-  if(!ids.length){ setPickerPlaceholder(editCampaignsContainer, 'Select accounts first'); return; }
-  setPickerLoading(editCampaignsContainer, 'Loading campaigns...');
+  if(!ids.length){ editCampaignsContainer.innerHTML='<div class="placeholder">Select accounts first</div>'; return; }
+  editCampaignsContainer.innerHTML='<div class="loading">Loading campaigns...</div>';
   try{
-    const resp=await fetch(`/api/all_campaigns?account_ids=${ids.join(',')}&show_all=${pickerFlags.editCampaigns}`);
+    const resp=await fetch(`/api/all_campaigns?account_ids=${ids.join(',')}`);
     const data=await resp.json();
     if(!resp.ok) throw new Error(data.detail||'Failed to load campaigns');
-    createPicker(editCampaignsContainer, {
-      items: data.campaigns.map(c => ({ id: c.id, name: c.name, status: c.status })),
-      showAllToggle: true,
-      showAll: pickerFlags.editCampaigns,
-      emptyText: 'No campaigns found',
-      onChange: () => onEditCampaignChange(),
-      onShowAllChange: (v) => { pickerFlags.editCampaigns = v; onEditAccountChange(); }
-    });
-  }catch(e){ setPickerPlaceholder(editCampaignsContainer, `Error: ${e.message}`); }
+    renderEditCampaigns(data.campaigns);
+  }catch(e){ editCampaignsContainer.innerHTML=`<div class="placeholder">Error: ${e.message}</div>`; }
+}
+
+function renderEditCampaigns(campaigns){
+  if(!campaigns.length){ editCampaignsContainer.innerHTML='<div class="placeholder">No campaigns found</div>'; return; }
+  editCampaignsContainer.innerHTML=`
+    <div class="select-actions">
+      <button onclick="selectAll('edit-campaigns-container', true, onEditCampaignChange)">Select All</button>
+      <button onclick="selectAll('edit-campaigns-container', false, onEditCampaignChange)">Deselect All</button>
+    </div>
+    <div class="checkbox-list">
+      ${campaigns.map(c=>`
+        <label class="checkbox-item">
+          <input type="checkbox" value="${c.id}" onchange="onEditCampaignChange()">
+          <span title="${escapeHtml(c.name)}">${escapeHtml(c.name)}</span>
+        </label>`).join('')}
+    </div>`;
 }
 
 async function onEditCampaignChange(){
   const accountIds=getEditSelectedAccountIds();
   const campaignIds=getEditSelectedCampaignIds();
-  _editContext = { account_id: null, ad_group_id: null, ad_resource_name: null, creatives: [] };
   hideEditPanels();
-  if(!campaignIds.length){ setPickerPlaceholder(editAdgroupsContainer, 'Select campaigns first'); return; }
-  setPickerLoading(editAdgroupsContainer, 'Loading ad groups...');
+  if(!campaignIds.length){ editAdgroupsContainer.innerHTML='<div class="placeholder">Select campaigns first</div>'; return; }
+  editAdgroupsContainer.innerHTML='<div class="loading">Loading ad groups...</div>';
   try{
-    const resp=await fetch(`/api/adgroups?account_ids=${accountIds.join(',')}&campaign_ids=${campaignIds.join(',')}&show_all=${pickerFlags.editAdgroups}`);
+    const resp=await fetch(`/api/adgroups?account_ids=${accountIds.join(',')}&campaign_ids=${campaignIds.join(',')}`);
     const data=await resp.json();
     if(!resp.ok) throw new Error(data.detail||'Failed to load ad groups');
-    createPicker(editAdgroupsContainer, {
-      items: data.adgroups.map(g => ({
-        id: `${g.account_id}|${g.ad_group_id}`, name: g.ad_group_name, hint: g.campaign_name, status: g.status
-      })),
-      multi: false,
-      showAllToggle: true,
-      showAll: pickerFlags.editAdgroups,
-      emptyText: 'No ad groups found',
-      onChange: (ids) => { if (ids.length) onEditAdgroupSelected(ids[0]); },
-      onShowAllChange: (v) => { pickerFlags.editAdgroups = v; onEditCampaignChange(); }
-    });
-  }catch(e){ setPickerPlaceholder(editAdgroupsContainer, `Error: ${e.message}`); }
+    renderEditAdgroups(data.adgroups);
+  }catch(e){ editAdgroupsContainer.innerHTML=`<div class="placeholder">Error: ${e.message}</div>`; }
 }
 
-async function onEditAdgroupSelected(key){
-  const [accountId, adGroupId] = key.split('|');
+function renderEditAdgroups(adgroups){
+  if(!adgroups.length){ editAdgroupsContainer.innerHTML='<div class="placeholder">No ad groups found</div>'; return; }
+  editAdgroupsContainer.innerHTML = adgroups.map(g=>`
+    <label class="checkbox-item">
+      <input type="radio" name="edit_adgroup" value="${g.account_id}|${g.ad_group_id}" onchange="onEditAdgroupChange(this)">
+      <span title="${escapeHtml(g.campaign_name+' / '+g.ad_group_name)}">${escapeHtml(g.ad_group_name)} <small style="color:var(--text-muted)">· ${escapeHtml(g.campaign_name)}</small></span>
+    </label>`).join('');
+}
+
+async function onEditAdgroupChange(radio){
+  const [accountId, adGroupId] = radio.value.split('|');
   _editContext = { account_id: accountId, ad_group_id: adGroupId, ad_resource_name: null, creatives: [] };
   editResults.classList.add('hidden');
   await loadEditCreatives();
@@ -682,7 +533,7 @@ async function loadEditCreatives(){
   if(!account_id || !ad_group_id) return;
   hideError(); showLoading();
   try{
-    const resp=await fetch(`/api/adgroup_creatives?account_id=${account_id}&ad_group_id=${ad_group_id}${creativesDateParams()}`);
+    const resp=await fetch(`/api/adgroup_creatives?account_id=${account_id}&ad_group_id=${ad_group_id}`);
     const data=await resp.json();
     if(!resp.ok) throw new Error(data.detail||'Failed to load creatives');
     _editContext.ad_resource_name = data.ad_resource_name;
@@ -767,8 +618,11 @@ let _migrate = {
   dst: { account_id: null, ad_group_id: null, ad_resource_name: null, creatives: [] }
 };
 
-function getMigrateSelectedAccountIds(pane){ return pickerSelected(migratePanes[pane].accounts); }
-function getMigrateSelectedCampaignIds(pane){ return pickerSelected(migratePanes[pane].campaigns); }
+function onMigrateSrcAccountChange(){ onMigrateAccountChange('src'); }
+function onMigrateDstAccountChange(){ onMigrateAccountChange('dst'); }
+
+function getMigrateSelectedAccountIds(pane){ return Array.from(migratePanes[pane].accounts.querySelectorAll('input[type="checkbox"]:checked')).map(cb=>cb.value); }
+function getMigrateSelectedCampaignIds(pane){ return Array.from(migratePanes[pane].campaigns.querySelectorAll('input[type="checkbox"]:checked')).map(cb=>cb.value); }
 
 function resetMigratePane(pane){
   _migrate[pane] = { account_id: null, ad_group_id: null, ad_resource_name: null, creatives: [] };
@@ -778,25 +632,35 @@ function resetMigratePane(pane){
 async function onMigrateAccountChange(pane){
   const p = migratePanes[pane];
   const ids = getMigrateSelectedAccountIds(pane);
-  setPickerPlaceholder(p.adgroups, 'Select campaigns first');
+  p.adgroups.innerHTML = '<div class="placeholder">Select campaigns first</div>';
   resetMigratePane(pane);
   updateMigrateSummary();
-  if(!ids.length){ setPickerPlaceholder(p.campaigns, 'Select accounts first'); return; }
-  setPickerLoading(p.campaigns, 'Loading campaigns...');
-  const flagKey = pane + 'Campaigns';
+  if(!ids.length){ p.campaigns.innerHTML='<div class="placeholder">Select accounts first</div>'; return; }
+  p.campaigns.innerHTML='<div class="loading">Loading campaigns...</div>';
   try{
-    const resp=await fetch(`/api/all_campaigns?account_ids=${ids.join(',')}&show_all=${pickerFlags[flagKey]}`);
+    const resp=await fetch(`/api/all_campaigns?account_ids=${ids.join(',')}`);
     const data=await resp.json();
     if(!resp.ok) throw new Error(data.detail||'Failed to load campaigns');
-    createPicker(p.campaigns, {
-      items: data.campaigns.map(c => ({ id: c.id, name: c.name, status: c.status })),
-      showAllToggle: true,
-      showAll: pickerFlags[flagKey],
-      emptyText: 'No campaigns found',
-      onChange: () => onMigrateCampaignChange(pane),
-      onShowAllChange: (v) => { pickerFlags[flagKey] = v; onMigrateAccountChange(pane); }
-    });
-  }catch(e){ setPickerPlaceholder(p.campaigns, `Error: ${e.message}`); }
+    renderMigrateCampaigns(pane, data.campaigns);
+  }catch(e){ p.campaigns.innerHTML=`<div class="placeholder">Error: ${e.message}</div>`; }
+}
+
+function renderMigrateCampaigns(pane, campaigns){
+  const p = migratePanes[pane];
+  if(!campaigns.length){ p.campaigns.innerHTML='<div class="placeholder">No campaigns found</div>'; return; }
+  const cid = p.campaigns.id;
+  p.campaigns.innerHTML=`
+    <div class="select-actions">
+      <button onclick="selectAll('${cid}', true, ()=>onMigrateCampaignChange('${pane}'))">Select All</button>
+      <button onclick="selectAll('${cid}', false, ()=>onMigrateCampaignChange('${pane}'))">Deselect All</button>
+    </div>
+    <div class="checkbox-list">
+      ${campaigns.map(c=>`
+        <label class="checkbox-item">
+          <input type="checkbox" value="${c.id}" onchange="onMigrateCampaignChange('${pane}')">
+          <span title="${escapeHtml(c.name)}">${escapeHtml(c.name)}</span>
+        </label>`).join('')}
+    </div>`;
 }
 
 async function onMigrateCampaignChange(pane){
@@ -805,29 +669,28 @@ async function onMigrateCampaignChange(pane){
   const campaignIds = getMigrateSelectedCampaignIds(pane);
   resetMigratePane(pane);
   updateMigrateSummary();
-  if(!campaignIds.length){ setPickerPlaceholder(p.adgroups, 'Select campaigns first'); return; }
-  setPickerLoading(p.adgroups, 'Loading ad groups...');
-  const flagKey = pane + 'Adgroups';
+  if(!campaignIds.length){ p.adgroups.innerHTML='<div class="placeholder">Select campaigns first</div>'; return; }
+  p.adgroups.innerHTML='<div class="loading">Loading ad groups...</div>';
   try{
-    const resp=await fetch(`/api/adgroups?account_ids=${accountIds.join(',')}&campaign_ids=${campaignIds.join(',')}&show_all=${pickerFlags[flagKey]}`);
+    const resp=await fetch(`/api/adgroups?account_ids=${accountIds.join(',')}&campaign_ids=${campaignIds.join(',')}`);
     const data=await resp.json();
     if(!resp.ok) throw new Error(data.detail||'Failed to load ad groups');
-    createPicker(p.adgroups, {
-      items: data.adgroups.map(g => ({
-        id: `${g.account_id}|${g.ad_group_id}`, name: g.ad_group_name, hint: g.campaign_name, status: g.status
-      })),
-      multi: false,
-      showAllToggle: true,
-      showAll: pickerFlags[flagKey],
-      emptyText: 'No ad groups found',
-      onChange: (ids) => { if (ids.length) onMigrateAdgroupSelected(pane, ids[0]); },
-      onShowAllChange: (v) => { pickerFlags[flagKey] = v; onMigrateCampaignChange(pane); }
-    });
-  }catch(e){ setPickerPlaceholder(p.adgroups, `Error: ${e.message}`); }
+    renderMigrateAdgroups(pane, data.adgroups);
+  }catch(e){ p.adgroups.innerHTML=`<div class="placeholder">Error: ${e.message}</div>`; }
 }
 
-async function onMigrateAdgroupSelected(pane, key){
-  const [accountId, adGroupId] = key.split('|');
+function renderMigrateAdgroups(pane, adgroups){
+  const p = migratePanes[pane];
+  if(!adgroups.length){ p.adgroups.innerHTML='<div class="placeholder">No ad groups found</div>'; return; }
+  p.adgroups.innerHTML = adgroups.map(g=>`
+    <label class="checkbox-item">
+      <input type="radio" name="migrate_${pane}_adgroup" value="${g.account_id}|${g.ad_group_id}" onchange="onMigrateAdgroupChange('${pane}', this)">
+      <span title="${escapeHtml(g.campaign_name+' / '+g.ad_group_name)}">${escapeHtml(g.ad_group_name)} <small style="color:var(--text-muted)">· ${escapeHtml(g.campaign_name)}</small></span>
+    </label>`).join('');
+}
+
+async function onMigrateAdgroupChange(pane, radio){
+  const [accountId, adGroupId] = radio.value.split('|');
   _migrate[pane] = { account_id: accountId, ad_group_id: adGroupId, ad_resource_name: null, creatives: [] };
   await loadMigrateCreatives(pane);
 }
@@ -837,7 +700,7 @@ async function loadMigrateCreatives(pane){
   if(!ctx.account_id || !ctx.ad_group_id) return;
   hideError(); showLoading();
   try{
-    const resp=await fetch(`/api/adgroup_creatives?account_id=${ctx.account_id}&ad_group_id=${ctx.ad_group_id}${creativesDateParams()}`);
+    const resp=await fetch(`/api/adgroup_creatives?account_id=${ctx.account_id}&ad_group_id=${ctx.ad_group_id}`);
     const data=await resp.json();
     if(!resp.ok) throw new Error(data.detail||'Failed to load creatives');
     ctx.ad_resource_name = data.ad_resource_name;
@@ -856,7 +719,6 @@ function renderMigrateCreatives(pane, data){
     const order = { BEST:0, GOOD:1, LEARNING:2, PENDING:3, UNRATED:4, LOW:5 };
     creatives.sort((a,b)=>(order[a.performance_label]??9)-(order[b.performance_label]??9));
   }
-  // No auto-checking: the user picks what to copy / remove manually.
   p.body.innerHTML = creatives.map(c=>{
     const label = c.performance_label || 'UNRATED';
     const cls = 'perf-' + label.toLowerCase();
@@ -866,10 +728,12 @@ function renderMigrateCreatives(pane, data){
       : escapeHtml(name);
     let cb;
     if(pane === 'src'){
+      const checked = (label==='GOOD'||label==='BEST') ? 'checked' : '';
       const disabled = c.video_id ? '' : 'disabled title="No video id — cannot copy"';
-      cb = `<input type="checkbox" class="mig-src-cb" data-vid="${escapeHtml(c.video_id||'')}" ${disabled} onchange="updateMigrateSummary()">`;
+      cb = `<input type="checkbox" class="mig-src-cb" data-vid="${escapeHtml(c.video_id||'')}" ${checked} ${disabled} onchange="updateMigrateSummary()">`;
     } else {
-      cb = `<input type="checkbox" class="mig-remove-cb" data-asset="${escapeHtml(c.asset_resource)}" onchange="updateMigrateSummary()">`;
+      const checked = label==='LOW' ? 'checked' : '';
+      cb = `<input type="checkbox" class="mig-remove-cb" data-asset="${escapeHtml(c.asset_resource)}" ${checked} onchange="updateMigrateSummary()">`;
     }
     return `<tr>
       <td style="text-align:center;">${cb}</td>
@@ -905,7 +769,7 @@ function updateMigrateSummary(){
   migrateSummary.innerHTML =
     `Copy <strong>${addIds.length}</strong> Good/Best → remove <strong>${removeAssets.length}</strong> Low ` +
     `→ destination will have <strong>${result}</strong> videos` +
-    (warn ? `<span class="summary-warn">${warn}</span>` : '');
+    (warn ? `<span style="color:var(--accent-red)">${warn}</span>` : '');
   migrateApplyBtn.disabled = (result < 1 || result > 20 || (addIds.length===0 && removeAssets.length===0));
 }
 
@@ -985,7 +849,7 @@ function initializeDashboardDefaults(){
 
 async function loadDashboardAccounts() {
   if (dashAccountsLoaded) return;
-
+  
   try {
     const resp = await fetch('/api/accounts');
     const text = await resp.text();
@@ -995,7 +859,7 @@ async function loadDashboardAccounts() {
       throw new Error(msg);
     }
     const data = JSON.parse(text);
-
+    
     dashAccountsLoaded = true;
     renderDashboardAccounts(data.accounts);
   } catch (e) {
@@ -1031,7 +895,7 @@ function selectAllDashAccounts(select) {
 function updateDashAccountsToggle() {
   const checked = dashAccountsMenu.querySelectorAll('input[type="checkbox"]:checked');
   const toggle = dashAccountsToggle.querySelector('.dropdown-placeholder, .dropdown-selected');
-
+  
   if (checked.length === 0) {
     toggle.className = 'dropdown-placeholder';
     toggle.textContent = 'Select accounts...';
@@ -1046,6 +910,24 @@ function updateDashAccountsToggle() {
 
 function getSelectedDashAccountIds() {
   return Array.from(dashAccountsMenu.querySelectorAll('input[type="checkbox"]:checked')).map(cb => cb.value);
+}
+
+function initializeDashboardDates(){
+  if (!dashDateRangeInput || !window.flatpickr) return;
+  
+  const now = new Date();
+  const firstDay = new Date(now.getFullYear(), now.getMonth(), 1);
+  const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+  
+  dashDatePicker = flatpickr(dashDateRangeInput, {
+    mode: 'range',
+    dateFormat: 'Y-m-d',
+    defaultDate: [firstDay, lastDay],
+    theme: 'dark',
+    locale: {
+      rangeSeparator: ' — '
+    }
+  });
 }
 
 function ensureCharts(){
@@ -1070,8 +952,8 @@ function setEmptyChart(chart, title, subtitle){
       text: title,
       subtext: subtitle || 'No data',
       left: 'center',
-      textStyle: { color: '#ffffff', fontSize: 14 },
-      subtextStyle: { color: 'rgba(255,255,255,0.72)', fontSize: 12 }
+      textStyle: { color: '#e6edf3', fontSize: 14 },
+      subtextStyle: { color: '#8b949e', fontSize: 12 }
     },
     xAxis: { show: false },
     yAxis: { show: false },
@@ -1082,10 +964,10 @@ function setEmptyChart(chart, title, subtitle){
 function buildCvrLineChart(dates, cvrData) {
   const colors = {
     google: '#58a6ff',
-    applovin: '#a371f7',
+    applovin: '#a371f7', 
     mintegral: '#3fb950'
   };
-
+  
   return {
     color: [colors.google, colors.applovin, colors.mintegral],
     grid: { left: 50, right: 20, top: 20, bottom: 40, containLabel: true },
@@ -1103,13 +985,13 @@ function buildCvrLineChart(dates, cvrData) {
     legend: {
       data: ['Google', 'AppLovin', 'Mintegral'],
       bottom: 0,
-      textStyle: { color: 'rgba(255,255,255,0.72)' }
+      textStyle: { color: '#8b949e' }
     },
     xAxis: {
       type: 'category',
       data: dates,
-      axisLabel: {
-        color: 'rgba(255,255,255,0.72)',
+      axisLabel: { 
+        color: '#8b949e', 
         fontSize: 10,
         rotate: dates.some(d => d.includes(' - ')) ? 45 : 0,
         interval: 0,
@@ -1129,8 +1011,8 @@ function buildCvrLineChart(dates, cvrData) {
     },
     yAxis: {
       type: 'value',
-      axisLabel: { color: 'rgba(255,255,255,0.72)', formatter: '{value}%' },
-      splitLine: { lineStyle: { color: 'rgba(255,255,255,0.12)' } }
+      axisLabel: { color: '#8b949e', formatter: '{value}%' },
+      splitLine: { lineStyle: { color: '#30363d' } }
     },
     series: [
       {
@@ -1184,8 +1066,8 @@ function buildStacked100Option(dates, series){
     xAxis: {
       type: 'category',
       data: dates,
-      axisLabel: {
-        color: 'rgba(255,255,255,0.72)',
+      axisLabel: { 
+        color: '#8b949e', 
         fontSize: 11,
         rotate: dates.some(d => d.includes(' - ')) ? 45 : 0,
         interval: 0,
@@ -1207,7 +1089,7 @@ function buildStacked100Option(dates, series){
       type: 'value',
       min: 0,
       max: 100,
-      axisLabel: { color: 'rgba(255,255,255,0.72)', formatter: '{value}%' }
+      axisLabel: { color: '#8b949e', formatter: '{value}%' }
     },
     series: series.map((s, idx) => ({
       name: s.name,
@@ -1218,7 +1100,7 @@ function buildStacked100Option(dates, series){
       symbolSize: 4,
       stack: 'total',
       areaStyle: { opacity: 0.35 },
-      emphasis: {
+      emphasis: { 
         focus: 'series',
         scale: true,
         symbolSize: 10
@@ -1230,7 +1112,7 @@ function buildStacked100Option(dates, series){
     legend: {
       type: 'scroll',
       bottom: 0,
-      textStyle: { color: 'rgba(255,255,255,0.72)' }
+      textStyle: { color: '#8b949e' }
     }
   };
 }
@@ -1240,9 +1122,13 @@ let _dashboardData = { google: null, applovin: null, mintegral: null };
 let _selectedSeries = { google: null, applovin: null, mintegral: null };
 
 async function loadDashboard(){
-  // Global period drives the dashboard too
-  const sd = state.dateRange.start, ed = state.dateRange.end;
-
+  // Get dates from flatpickr
+  let sd = '', ed = '';
+  if (dashDatePicker && dashDatePicker.selectedDates.length === 2) {
+    sd = formatDate(dashDatePicker.selectedDates[0]);
+    ed = formatDate(dashDatePicker.selectedDates[1]);
+  }
+  
   const platform = dashPlatformSelect ? dashPlatformSelect.value : 'Android';
   const groupBy = 'day';  // Only daily grouping supported
   const adjustAppToken = dashAppSelect ? dashAppSelect.value : '';
