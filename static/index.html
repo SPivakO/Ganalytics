@@ -4,18 +4,27 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Google Ads Manager</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.css">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/themes/dark.css">
-    <link rel="stylesheet" href="/static/style.css">
+    <link rel="stylesheet" href="/static/style.css?v=20260710">
 </head>
 <body>
     <div class="container">
-        <header style="display: flex; justify-content: space-between; align-items: center;">
+        <header>
             <div>
                 <h1>Creative Management</h1>
-                <p class="subtitle">Assets Analytics & Upload</p>
+                <p class="subtitle">Assets Analytics &amp; Upload</p>
             </div>
-            <a href="/api/auth/logout" class="btn-secondary" style="text-decoration: none; font-size: 0.9rem;">Logout</a>
+            <div class="header-controls">
+                <div class="global-dates">
+                    <label for="global-date-range">Period</label>
+                    <input type="text" id="global-date-range" class="text-input date-range-input" placeholder="Last 7 days">
+                </div>
+                <a href="/api/auth/logout" class="btn-outline">Logout</a>
+            </div>
         </header>
 
         <!-- Navigation Tabs -->
@@ -48,14 +57,14 @@
                 <div class="filter-row">
                     <div class="filter-group">
                         <label>Accounts</label>
-                        <div class="multi-select" id="accounts-container">
+                        <div class="picker" id="accounts-container">
                             <div class="loading">Loading accounts...</div>
                         </div>
                     </div>
 
                     <div class="filter-group">
                         <label>Campaigns</label>
-                        <div class="multi-select" id="campaigns-container">
+                        <div class="picker" id="campaigns-container">
                             <div class="placeholder">Select accounts first</div>
                         </div>
                     </div>
@@ -74,17 +83,14 @@
                                 <input type="radio" name="adgroup_type" value="test">
                                 <span class="radio-custom"></span>
                                 Test
-                                <input type="text" id="test-date" class="test-date-input" placeholder="e.g. 181225" disabled>
                             </label>
                         </div>
                     </div>
 
-                    <div class="filter-group dates">
-                        <label>Date Range</label>
-                        <div class="date-inputs">
-                            <input type="date" id="start-date" value="">
-                            <span class="date-separator">—</span>
-                            <input type="date" id="end-date" value="">
+                    <div class="filter-group hidden" id="report-adgroups-group">
+                        <label>Test Ad Groups</label>
+                        <div class="picker" id="report-adgroups-container">
+                            <div class="placeholder">Select campaigns first</div>
                         </div>
                     </div>
 
@@ -159,14 +165,14 @@
                 <div class="filter-row">
                     <div class="filter-group">
                         <label>Accounts</label>
-                        <div class="multi-select" id="upload-accounts-container">
+                        <div class="picker" id="upload-accounts-container">
                             <div class="loading">Loading accounts...</div>
                         </div>
                     </div>
 
                     <div class="filter-group">
                         <label>Campaigns</label>
-                        <div class="multi-select" id="upload-campaigns-container">
+                        <div class="picker" id="upload-campaigns-container">
                             <div class="placeholder">Select accounts first</div>
                         </div>
                     </div>
@@ -226,19 +232,19 @@ Shoot web, hook, swing, throw enemies and fight in the air like real Spider-man<
                 <div class="filter-row">
                     <div class="filter-group">
                         <label>Accounts</label>
-                        <div class="multi-select" id="edit-accounts-container">
+                        <div class="picker" id="edit-accounts-container">
                             <div class="loading">Loading accounts...</div>
                         </div>
                     </div>
                     <div class="filter-group">
                         <label>Campaigns</label>
-                        <div class="multi-select" id="edit-campaigns-container">
+                        <div class="picker" id="edit-campaigns-container">
                             <div class="placeholder">Select accounts first</div>
                         </div>
                     </div>
                     <div class="filter-group">
                         <label>Ad Group (pick one)</label>
-                        <div class="multi-select" id="edit-adgroups-container">
+                        <div class="picker" id="edit-adgroups-container">
                             <div class="placeholder">Select campaigns first</div>
                         </div>
                     </div>
@@ -301,7 +307,7 @@ https://youtu.be/ANOTHER_ID
 
         <!-- MIGRATE 2ND TOUCH TAB -->
         <div id="migrate-tab" class="tab-content">
-            <p class="edit-hint" style="margin-bottom:16px;">Second touch: copy the <strong>Good/Best</strong> videos from a test ad group (left) into a main ad group in place of its <strong>Low</strong> videos (right). Good/Best on the left and Low on the right are pre-selected — adjust, then Apply. Works across different accounts too.</p>
+            <p class="edit-hint" style="margin-bottom:16px;">Second touch: copy the <strong>Good/Best</strong> videos from a test ad group (left) into a main ad group in place of its <strong>Low</strong> videos (right). Tick what to copy on the left and what to remove on the right, then Apply. Works across different accounts too.</p>
 
             <div class="migrate-grid">
                 <!-- SOURCE (left) -->
@@ -310,26 +316,26 @@ https://youtu.be/ANOTHER_ID
                     <div class="filters-panel">
                         <div class="filter-group">
                             <label>Accounts</label>
-                            <div class="multi-select migrate-select" id="src-accounts-container">
+                            <div class="picker" id="src-accounts-container">
                                 <div class="loading">Loading accounts...</div>
                             </div>
                         </div>
                         <div class="filter-group" style="margin-top:12px;">
                             <label>Campaigns</label>
-                            <div class="multi-select migrate-select" id="src-campaigns-container">
+                            <div class="picker" id="src-campaigns-container">
                                 <div class="placeholder">Select accounts first</div>
                             </div>
                         </div>
                         <div class="filter-group" style="margin-top:12px;">
                             <label>Ad Group (pick one)</label>
-                            <div class="multi-select migrate-select" id="src-adgroups-container">
+                            <div class="picker" id="src-adgroups-container">
                                 <div class="placeholder">Select campaigns first</div>
                             </div>
                         </div>
                     </div>
                     <div id="src-creatives-panel" class="results-panel hidden" style="margin-top:12px;">
                         <div class="results-header">
-                            <div class="results-info"><span id="src-creatives-count">0 videos</span> · <span class="perf-badge perf-best">BEST</span> <span class="perf-badge perf-good">GOOD</span> pre-checked</div>
+                            <div class="results-info"><span id="src-creatives-count">0 videos</span> · tick <span class="perf-badge perf-best">BEST</span> <span class="perf-badge perf-good">GOOD</span> to copy</div>
                         </div>
                         <div class="table-container">
                             <table>
@@ -355,26 +361,26 @@ https://youtu.be/ANOTHER_ID
                     <div class="filters-panel">
                         <div class="filter-group">
                             <label>Accounts</label>
-                            <div class="multi-select migrate-select" id="dst-accounts-container">
+                            <div class="picker" id="dst-accounts-container">
                                 <div class="loading">Loading accounts...</div>
                             </div>
                         </div>
                         <div class="filter-group" style="margin-top:12px;">
                             <label>Campaigns</label>
-                            <div class="multi-select migrate-select" id="dst-campaigns-container">
+                            <div class="picker" id="dst-campaigns-container">
                                 <div class="placeholder">Select accounts first</div>
                             </div>
                         </div>
                         <div class="filter-group" style="margin-top:12px;">
                             <label>Ad Group (pick one)</label>
-                            <div class="multi-select migrate-select" id="dst-adgroups-container">
+                            <div class="picker" id="dst-adgroups-container">
                                 <div class="placeholder">Select campaigns first</div>
                             </div>
                         </div>
                     </div>
                     <div id="dst-creatives-panel" class="results-panel hidden" style="margin-top:12px;">
                         <div class="results-header">
-                            <div class="results-info"><span id="dst-creatives-count">0 videos</span> · <span class="perf-badge perf-low">LOW</span> pre-checked to remove</div>
+                            <div class="results-info"><span id="dst-creatives-count">0 videos</span> · tick <span class="perf-badge perf-low">LOW</span> to remove</div>
                         </div>
                         <div class="table-container">
                             <table>
@@ -413,10 +419,6 @@ https://youtu.be/ANOTHER_ID
         <div id="dashboard-tab" class="tab-content">
             <div class="filters-panel">
                 <div class="filter-row">
-                    <div class="filter-group dates">
-                        <label>Date Range</label>
-                        <input type="text" id="dash-date-range" class="text-input date-range-input" placeholder="Select date range...">
-                    </div>
                     <div class="filter-group">
                         <label>Platform</label>
                         <select id="dash-platform" class="text-input">
@@ -500,6 +502,6 @@ https://youtu.be/ANOTHER_ID
 
     <script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
-    <script src="/static/app.js"></script>
+    <script src="/static/app.js?v=20260710"></script>
 </body>
 </html>
