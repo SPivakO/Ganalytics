@@ -384,7 +384,7 @@ async function loadReportAdgroups(){
     if(!resp.ok) throw new Error(data.detail||'Failed to load ad groups');
     createPicker(reportAdgroupsContainer, {
       items: data.adgroups.map(g => ({
-        id: g.id, name: g.ad_group_name, hint: g.campaign_name, status: g.status
+        id: g.id, name: g.ad_group_name, status: g.status
       })),
       showAllToggle: true,
       showAll: pickerFlags.reportAdgroups,

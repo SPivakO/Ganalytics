@@ -205,6 +205,18 @@ header h1 {
 .filter-group.full-width { flex: none; width: 100%; }
 .filter-group.half-width { flex: 1; min-width: 0; }
 
+/* Report second row: narrow controls left, wide ad-group picker, action right */
+.filter-row.report-controls-row { align-items: flex-start; }
+.report-left { flex: 0 0 210px; }
+.report-left .report-options { margin-top: 18px; }
+.report-left .report-options .checkbox-option:first-child { padding-top: 0; }
+.report-adgroups { flex: 1 1 auto; }
+.report-actions { flex: 0 0 auto; align-self: flex-end; padding-bottom: 4px; }
+@media (max-width: 1024px) {
+    .report-left { flex: 1 1 auto; }
+    .report-actions { align-self: stretch; }
+}
+
 /* ---------------- Picker ---------------- */
 .picker {
     background: var(--surface-2);

@@ -9,7 +9,7 @@
     <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.css">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/themes/dark.css">
-    <link rel="stylesheet" href="/static/style.css?v=20260710">
+    <link rel="stylesheet" href="/static/style.css?v=20260710b">
 </head>
 <body>
     <div class="container">
@@ -70,8 +70,8 @@
                     </div>
                 </div>
 
-                <div class="filter-row">
-                    <div class="filter-group adgroup-type">
+                <div class="filter-row report-controls-row">
+                    <div class="filter-group report-left">
                         <label>Ad Group Type</label>
                         <div class="radio-group">
                             <label class="radio-label">
@@ -85,28 +85,26 @@
                                 Test
                             </label>
                         </div>
+                        <div class="report-options">
+                            <label class="checkbox-option">
+                                <input type="checkbox" id="group-by-account">
+                                <span>Split by Account</span>
+                            </label>
+                            <label class="checkbox-option">
+                                <input type="checkbox" id="group-by-campaign" checked>
+                                <span>Split by Campaign</span>
+                            </label>
+                        </div>
                     </div>
 
-                    <div class="filter-group hidden" id="report-adgroups-group">
+                    <div class="filter-group report-adgroups hidden" id="report-adgroups-group">
                         <label>Test Ad Groups</label>
                         <div class="picker" id="report-adgroups-container">
                             <div class="placeholder">Select campaigns first</div>
                         </div>
                     </div>
 
-                    <div class="filter-group options">
-                        <label>Options</label>
-                        <label class="checkbox-option">
-                            <input type="checkbox" id="group-by-account">
-                            <span>Split by Account</span>
-                        </label>
-                        <label class="checkbox-option">
-                            <input type="checkbox" id="group-by-campaign" checked>
-                            <span>Split by Campaign</span>
-                        </label>
-                    </div>
-
-                    <div class="filter-group actions">
+                    <div class="filter-group actions report-actions">
                         <button id="load-btn" class="btn-primary">
                             <span class="btn-icon">🔍</span>
                             Load Report
@@ -502,6 +500,6 @@ https://youtu.be/ANOTHER_ID
 
     <script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
-    <script src="/static/app.js?v=20260710"></script>
+    <script src="/static/app.js?v=20260710b"></script>
 </body>
 </html>
