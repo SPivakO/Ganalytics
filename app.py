@@ -123,7 +123,8 @@ class ReportRequest(BaseModel):
     account_ids: List[str]
     campaign_ids: List[str]
     adgroup_type: str  # "main" or "test"
-    test_date: Optional[str] = None  # e.g. "181225"
+    test_date: Optional[str] = None  # legacy name filter, ignored when ad_group_ids is set
+    ad_group_ids: Optional[List[str]] = None  # "accountId_adGroupId" keys for test mode
     start_date: str
     end_date: str
     group_by_account: bool = False
@@ -574,7 +575,8 @@ async def root(request: Request):
     user = request.session.get('user')
     if not user:
         return RedirectResponse(url='/api/auth/login')
-    return FileResponse("static/index.html")
+    # Always revalidate the shell so versioned ?v= asset URLs take effect after a deploy
+    return FileResponse("static/index.html", headers={"Cache-Control": "no-cache"})
 
 
 @app.get("/api/auth/login")
@@ -646,23 +648,28 @@ async def get_accounts(user: dict[str, Any] = Depends(get_current_user)):
 
 
 @app.get("/api/campaigns")
-async def get_campaigns(account_ids: str, start_date: str, end_date: str, user: dict[str, Any] = Depends(get_current_user)):
-    """Get campaigns for selected accounts that have spend in the date range"""
+async def get_campaigns(account_ids: str, start_date: str, end_date: str, show_all: bool = False, user: dict[str, Any] = Depends(get_current_user)):
+    """Get campaigns for selected accounts that have spend in the date range.
+
+    By default only ENABLED campaigns are returned; show_all=true includes paused ones.
+    """
     client = get_client()
     ga_service = client.get_service("GoogleAdsService")
-    
+
     account_list = account_ids.split(',')
     all_campaigns = []
-    
+
+    status_filter = "campaign.status != 'REMOVED'" if show_all else "campaign.status = 'ENABLED'"
     # Optimized query: don't include segments.date in SELECT to get aggregated data
     # This significantly reduces response size and improves performance for large date ranges
     query = f"""
         SELECT
             campaign.id,
             campaign.name,
+            campaign.status,
             metrics.cost_micros
         FROM campaign
-        WHERE campaign.status != 'REMOVED'
+        WHERE {status_filter}
           AND segments.date BETWEEN '{start_date}' AND '{end_date}'
           AND metrics.cost_micros > 0
     """
@@ -681,7 +688,8 @@ async def get_campaigns(account_ids: str, start_date: str, end_date: str, user: 
                             'id': campaign_key,
                             'campaign_id': str(row.campaign.id),
                             'account_id': account_id,
-                            'name': row.campaign.name
+                            'name': row.campaign.name,
+                            'status': row.campaign.status.name
                         })
         except Exception as e:
             print(f"[get_campaigns] Error for account {account_id}: {e}")
@@ -709,38 +717,40 @@ async def generate_report(request: ReportRequest, user: dict[str, Any] = Depends
     accounts_resp = await get_accounts(user)
     state_accounts = accounts_resp.get('accounts', [])
     
-    # Build adgroup filter
-    if request.adgroup_type == "main":
-        adgroup_filter = "Main"
-    else:
-        adgroup_filter = request.test_date or ""
-    
-    # Build campaign names filter from campaign_ids
-    campaign_names = []
-    for cid in request.campaign_ids:
-        parts = cid.split('_', 1)
-        if len(parts) > 1:
-            # Extract campaign name from the ID (we stored account_campaignId)
-            pass
-    
+    # Test mode with explicit ad group picks ("accountId_adGroupId" keys)
+    picked_adgroups = request.ad_group_ids if (request.adgroup_type == "test" and request.ad_group_ids) else None
+
     all_results = []
-    
+
     for account_id in request.account_ids:
         # Get campaign IDs for this account from selected campaign_ids
         account_campaigns = [c.split('_', 1)[1] if '_' in c else c
                            for c in request.campaign_ids
                            if c.startswith(account_id + '_')]
-        
+
         if not account_campaigns and request.campaign_ids:
             # Check if any campaign_ids match this account
             continue
-        
+
         # Build campaign filter for SQL query
         campaign_filter = ""
         if account_campaigns:
             campaign_ids_str = ",".join([f"'{cid}'" for cid in account_campaigns])
             campaign_filter = f"AND campaign.id IN ({campaign_ids_str})"
-        
+
+        # Build ad group filter: picked ids (test mode) beat the legacy name LIKE
+        if picked_adgroups is not None:
+            account_adgroups = [g.split('_', 1)[1] for g in picked_adgroups
+                                if g.startswith(account_id + '_')]
+            if not account_adgroups:
+                continue
+            adgroup_ids_str = ",".join(account_adgroups)
+            adgroup_clause = f"ad_group.id IN ({adgroup_ids_str})"
+        elif request.adgroup_type == "main":
+            adgroup_clause = "ad_group.name LIKE '%Main%'"
+        else:
+            adgroup_clause = f"ad_group.name LIKE '%{request.test_date or ''}%'"
+
         # Optimized query: removed segments.date from SELECT (aggregate over entire period)
         # This reduces data volume by 30-90x (depending on period length)
         # Google Ads API automatically aggregates when segments.date is not in SELECT
@@ -761,7 +771,7 @@ async def generate_report(request: ReportRequest, user: dict[str, Any] = Depends
                 asset.type = 'YOUTUBE_VIDEO'
                 AND segments.date BETWEEN '{request.start_date}' AND '{request.end_date}'
                 AND metrics.impressions > 0
-                AND ad_group.name LIKE '%{adgroup_filter}%'
+                AND {adgroup_clause}
                 {campaign_filter}
         """
         
@@ -1226,23 +1236,27 @@ def resolve_video_assets(client, customer_id, video_ids):
 
 
 @app.get("/api/all_campaigns")
-async def get_all_campaigns(account_ids: str, user: dict[str, Any] = Depends(get_current_user)):
-    """Get ALL campaigns for selected accounts (for upload section)"""
+async def get_all_campaigns(account_ids: str, show_all: bool = False, user: dict[str, Any] = Depends(get_current_user)):
+    """Get campaigns for selected accounts (upload/edit/migrate sections).
+
+    By default only ENABLED campaigns are returned; show_all=true includes paused ones.
+    """
     client = get_client()
     ga_service = client.get_service("GoogleAdsService")
-    
+
     account_list = account_ids.split(',')
     all_campaigns = []
-    
-    query = """
+
+    status_filter = "campaign.status != 'REMOVED'" if show_all else "campaign.status = 'ENABLED'"
+    query = f"""
         SELECT
             campaign.id,
             campaign.name,
             campaign.status
         FROM campaign
-        WHERE campaign.status = 'ENABLED'
+        WHERE {status_filter}
     """
-    
+
     for account_id in account_list:
         try:
             response = ga_service.search(customer_id=account_id.strip(), query=query)
@@ -1252,11 +1266,12 @@ async def get_all_campaigns(account_ids: str, user: dict[str, Any] = Depends(get
                     'id': campaign_key,
                     'campaign_id': str(row.campaign.id),
                     'account_id': account_id,
-                    'name': row.campaign.name
+                    'name': row.campaign.name,
+                    'status': row.campaign.status.name
                 })
         except:
             continue
-    
+
     return {"campaigns": sorted(all_campaigns, key=lambda x: x['name'])}
 
 
@@ -1453,10 +1468,11 @@ class ReplaceCreativesRequest(BaseModel):
 
 
 @app.get("/api/adgroups")
-async def get_adgroups(account_ids: str, campaign_ids: str, user: dict[str, Any] = Depends(get_current_user)):
-    """List ad groups for selected campaigns (Edit Ad Group tab).
+async def get_adgroups(account_ids: str, campaign_ids: str, show_all: bool = False, user: dict[str, Any] = Depends(get_current_user)):
+    """List ad groups for selected campaigns (Edit/Migrate/Report tabs).
 
     campaign_ids are 'accountId_campaignId' keys (same format as other tabs).
+    By default only ENABLED ad groups are returned; show_all=true includes paused ones.
     """
     client = get_client()
     ga_service = client.get_service("GoogleAdsService")
@@ -1473,6 +1489,7 @@ async def get_adgroups(account_ids: str, campaign_ids: str, user: dict[str, Any]
             campaigns_by_account.setdefault(acc, []).append(camp)
 
     results = []
+    status_filter = "ad_group.status != 'REMOVED'" if show_all else "ad_group.status = 'ENABLED'"
     for account_id, camp_ids in campaigns_by_account.items():
         ids_str = ",".join(camp_ids)
         query = f"""
@@ -1480,7 +1497,7 @@ async def get_adgroups(account_ids: str, campaign_ids: str, user: dict[str, Any]
                    campaign.id, campaign.name
             FROM ad_group
             WHERE campaign.id IN ({ids_str})
-              AND ad_group.status != 'REMOVED'
+              AND {status_filter}
         """
         try:
             response = ga_service.search(customer_id=account_id, query=query)
@@ -1502,10 +1519,15 @@ async def get_adgroups(account_ids: str, campaign_ids: str, user: dict[str, Any]
 
 
 @app.get("/api/adgroup_creatives")
-async def get_adgroup_creatives(account_id: str, ad_group_id: str, user: dict[str, Any] = Depends(get_current_user)):
+async def get_adgroup_creatives(account_id: str, ad_group_id: str, start_date: Optional[str] = None, end_date: Optional[str] = None, user: dict[str, Any] = Depends(get_current_user)):
     """Return the App Ad's current YouTube video creatives with Google's
-    performance_label (LOW/GOOD/BEST/LEARNING/PENDING) and lifetime metrics.
+    performance_label (LOW/GOOD/BEST/LEARNING/PENDING) and metrics.
+
+    performance_label is always the current one; metrics are restricted to
+    [start_date, end_date] when provided, otherwise lifetime.
     """
+    if start_date and end_date:
+        validate_date_range(start_date, end_date, max_months=3)
     client = get_client()
     ga_service = client.get_service("GoogleAdsService")
 
@@ -1538,52 +1560,73 @@ async def get_adgroup_creatives(account_id: str, ad_group_id: str, user: dict[st
             detail="No App Ad found in this ad group (only App campaigns are supported)"
         )
 
-    # (b) performance_label + lifetime metrics per youtube asset (no segments.date
-    #     so we get the current label and all-time stats for every linked asset).
-    stats = {}
+    # (b1) Current performance_label + names per youtube asset — deliberately
+    #      undated so the label stays accurate even without traffic in the range.
+    labels = {}
     try:
-        view_query = f"""
+        label_query = f"""
             SELECT ad_group_ad_asset_view.asset,
                    ad_group_ad_asset_view.performance_label,
                    asset.youtube_video_asset.youtube_video_id,
                    asset.youtube_video_asset.youtube_video_title,
-                   asset.name,
-                   metrics.cost_micros, metrics.impressions, metrics.conversions
+                   asset.name
             FROM ad_group_ad_asset_view
             WHERE ad_group.id = {ad_group_id}
               AND ad_group_ad_asset_view.field_type = 'YOUTUBE_VIDEO'
         """
-        resp = ga_service.search(customer_id=account_id, query=view_query)
+        resp = ga_service.search(customer_id=account_id, query=label_query)
         for row in resp:
             av = row.ad_group_ad_asset_view
             yt = row.asset.youtube_video_asset
-            impressions = row.metrics.impressions or 0
-            installs = row.metrics.conversions or 0
-            stats[av.asset] = {
+            labels[av.asset] = {
                 'performance_label': av.performance_label.name,
                 'video_id': yt.youtube_video_id,
                 'title': yt.youtube_video_title or row.asset.name or '',
-                'cost': round((row.metrics.cost_micros / 1_000_000) if row.metrics.cost_micros else 0.0, 2),
-                'impressions': int(impressions),
-                'installs': int(round(installs)),
-                'cvr': round((installs / impressions * 100) if impressions else 0.0, 3),
             }
+    except GoogleAdsException:
+        pass
+
+    # (b2) Metrics per asset, restricted to the selected period when provided.
+    stats = {}
+    date_filter = f"AND segments.date BETWEEN '{start_date}' AND '{end_date}'" if start_date and end_date else ""
+    try:
+        metrics_query = f"""
+            SELECT ad_group_ad_asset_view.asset,
+                   metrics.cost_micros, metrics.impressions, metrics.conversions
+            FROM ad_group_ad_asset_view
+            WHERE ad_group.id = {ad_group_id}
+              AND ad_group_ad_asset_view.field_type = 'YOUTUBE_VIDEO'
+              {date_filter}
+        """
+        resp = ga_service.search(customer_id=account_id, query=metrics_query)
+        for row in resp:
+            asset_res = row.ad_group_ad_asset_view.asset
+            impressions = row.metrics.impressions or 0
+            installs = row.metrics.conversions or 0
+            prev = stats.get(asset_res, {'cost': 0.0, 'impressions': 0, 'installs': 0.0})
+            prev['cost'] += (row.metrics.cost_micros / 1_000_000) if row.metrics.cost_micros else 0.0
+            prev['impressions'] += int(impressions)
+            prev['installs'] += installs
+            stats[asset_res] = prev
     except GoogleAdsException:
         pass
 
     creatives = []
     for asset_res in membership:
-        s = stats.get(asset_res)
-        if s:
-            creatives.append({'asset_resource': asset_res, **s})
-        else:
-            creatives.append({
-                'asset_resource': asset_res,
-                'performance_label': 'UNRATED',
-                'video_id': '',
-                'title': '',
-                'cost': 0.0, 'impressions': 0, 'installs': 0, 'cvr': 0.0,
-            })
+        lab = labels.get(asset_res, {'performance_label': 'UNRATED', 'video_id': '', 'title': ''})
+        s = stats.get(asset_res, {'cost': 0.0, 'impressions': 0, 'installs': 0.0})
+        impressions = s['impressions']
+        installs = s['installs']
+        creatives.append({
+            'asset_resource': asset_res,
+            'performance_label': lab['performance_label'],
+            'video_id': lab['video_id'],
+            'title': lab['title'],
+            'cost': round(s['cost'], 2),
+            'impressions': int(impressions),
+            'installs': int(round(installs)),
+            'cvr': round((installs / impressions * 100) if impressions else 0.0, 3),
+        })
 
     # Surface removal candidates first: LOW on top, then by cost desc.
     order = {'LOW': 0, 'LEARNING': 1, 'UNRATED': 2, 'PENDING': 3, 'GOOD': 4, 'BEST': 5}
