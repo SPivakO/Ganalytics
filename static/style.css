@@ -500,7 +500,24 @@ tbody tr:hover { background: var(--hover); }
 .migrate-pane-title.dst { color: var(--amber); background: rgba(240,161,61,0.07); border-color: rgba(240,161,61,0.35); }
 .migrate-summary { font-size: 14px; color: var(--text-2); }
 .migrate-summary .summary-warn { color: var(--danger); }
+.migrate-summary-lines { margin-top: 6px; font-size: 12.5px; }
+.migrate-summary-lines .summary-warn { display: block; }
 #migrate-footer { margin-top: 18px; }
+
+/* union-table helpers */
+.mig-groups-badge {
+    display: inline-block;
+    font-size: 10px; font-weight: 700;
+    color: var(--text-3);
+    border: 1px solid var(--hairline);
+    border-radius: var(--r-pill);
+    padding: 0 7px;
+    margin-left: 6px;
+    vertical-align: middle;
+}
+.mig-in-cell { color: var(--text-3); font-size: 12.5px; cursor: help; }
+.mig-unmatched { color: var(--text-3); font-size: 12px; }
+.perf-badges { display: flex; flex-wrap: wrap; gap: 4px; }
 
 /* ---------------- Dashboard ---------------- */
 .dashboard-grid { display: grid; grid-template-columns: 1fr; gap: 16px; }
