@@ -156,8 +156,12 @@ function onGlobalDatesChanged(){
   // Refresh already-populated views that depend on the period
   if (getSelectedAccountIds().length) onAccountChange();
   if (_editContext.ad_group_id) loadEditCreatives();
-  if (_migrate.src.ad_group_id) loadMigrateCreatives('src');
-  if (_migrate.dst.ad_group_id) loadMigrateCreatives('dst');
+  for (const pane of ['src','dst']) {
+    if (_migrate[pane].order.length) {
+      _migrate[pane].byGroup = {};
+      onMigrateAdgroupsChanged(pane, _migrate[pane].order.slice());
+    }
+  }
 }
 
 function initializeTabs(){
@@ -762,16 +766,28 @@ function renderEditResults(data){
 }
 
 // ==================== MIGRATE 2ND TOUCH TAB ====================
+// Multi-donor -> multi-target. byGroup maps "account|adGroupId" to that group's
+// loaded context; both tables render a union of creatives deduped by video_id
+// (creatives are named identically across channels/campaigns).
 let _migrate = {
-  src: { account_id: null, ad_group_id: null, ad_resource_name: null, creatives: [] },
-  dst: { account_id: null, ad_group_id: null, ad_resource_name: null, creatives: [] }
+  src: { byGroup: {}, order: [], meta: {} },
+  dst: { byGroup: {}, order: [], meta: {} }
 };
+
+const MIGRATE_LABEL_ORDER = { BEST: 0, GOOD: 1, LEARNING: 2, PENDING: 3, UNRATED: 4, LOW: 5 };
+function migrateBestLabel(labels){
+  return Object.keys(labels).sort((a,b)=>(MIGRATE_LABEL_ORDER[a]??9)-(MIGRATE_LABEL_ORDER[b]??9))[0] || 'UNRATED';
+}
+function migrateWorstRank(labels){
+  return Math.max(...Object.keys(labels).map(l => MIGRATE_LABEL_ORDER[l] ?? 9));
+}
 
 function getMigrateSelectedAccountIds(pane){ return pickerSelected(migratePanes[pane].accounts); }
 function getMigrateSelectedCampaignIds(pane){ return pickerSelected(migratePanes[pane].campaigns); }
 
 function resetMigratePane(pane){
-  _migrate[pane] = { account_id: null, ad_group_id: null, ad_resource_name: null, creatives: [] };
+  _migrate[pane].byGroup = {};
+  _migrate[pane].order = [];
   migratePanes[pane].panel.classList.add('hidden');
 }
 
@@ -812,74 +828,155 @@ async function onMigrateCampaignChange(pane){
     const resp=await fetch(`/api/adgroups?account_ids=${accountIds.join(',')}&campaign_ids=${campaignIds.join(',')}&show_all=${pickerFlags[flagKey]}`);
     const data=await resp.json();
     if(!resp.ok) throw new Error(data.detail||'Failed to load ad groups');
+    // Remember names for tooltips/logs
+    _migrate[pane].meta = {};
+    data.adgroups.forEach(g => {
+      _migrate[pane].meta[`${g.account_id}|${g.ad_group_id}`] = {
+        campaign_name: g.campaign_name, ad_group_name: g.ad_group_name
+      };
+    });
     createPicker(p.adgroups, {
       items: data.adgroups.map(g => ({
         id: `${g.account_id}|${g.ad_group_id}`, name: g.ad_group_name, hint: g.campaign_name, status: g.status
       })),
-      multi: false,
       showAllToggle: true,
       showAll: pickerFlags[flagKey],
       emptyText: 'No ad groups found',
-      onChange: (ids) => { if (ids.length) onMigrateAdgroupSelected(pane, ids[0]); },
+      onChange: (ids) => onMigrateAdgroupsChanged(pane, ids),
       onShowAllChange: (v) => { pickerFlags[flagKey] = v; onMigrateCampaignChange(pane); }
     });
   }catch(e){ setPickerPlaceholder(p.adgroups, `Error: ${e.message}`); }
 }
 
-async function onMigrateAdgroupSelected(pane, key){
-  const [accountId, adGroupId] = key.split('|');
-  _migrate[pane] = { account_id: accountId, ad_group_id: adGroupId, ad_resource_name: null, creatives: [] };
-  await loadMigrateCreatives(pane);
-}
-
-async function loadMigrateCreatives(pane){
+async function onMigrateAdgroupsChanged(pane, keys){
   const ctx = _migrate[pane];
-  if(!ctx.account_id || !ctx.ad_group_id) return;
-  hideError(); showLoading();
-  try{
-    const resp=await fetch(`/api/adgroup_creatives?account_id=${ctx.account_id}&ad_group_id=${ctx.ad_group_id}${creativesDateParams()}`);
-    const data=await resp.json();
-    if(!resp.ok) throw new Error(data.detail||'Failed to load creatives');
-    ctx.ad_resource_name = data.ad_resource_name;
-    ctx.creatives = data.creatives || [];
-    renderMigrateCreatives(pane, data);
-  }catch(e){ showError('Failed to load creatives: '+e.message); migratePanes[pane].panel.classList.add('hidden'); }
-  finally{ hideLoading(); updateMigrateSummary(); }
+  ctx.order = keys.slice();
+  // Drop groups that were unselected
+  Object.keys(ctx.byGroup).forEach(k => { if(!keys.includes(k)) delete ctx.byGroup[k]; });
+  const toLoad = keys.filter(k => !ctx.byGroup[k]);
+  if(toLoad.length){
+    hideError(); showLoading();
+    try{
+      await Promise.all(toLoad.map(async k => {
+        const [accountId, adGroupId] = k.split('|');
+        const resp = await fetch(`/api/adgroup_creatives?account_id=${accountId}&ad_group_id=${adGroupId}${creativesDateParams()}`);
+        const data = await resp.json();
+        if(!resp.ok) throw new Error(data.detail || 'Failed to load creatives');
+        const meta = ctx.meta[k] || {};
+        ctx.byGroup[k] = {
+          key: k,
+          account_id: accountId,
+          ad_group_id: adGroupId,
+          ad_resource_name: data.ad_resource_name,
+          creatives: data.creatives || [],
+          campaign_name: meta.campaign_name || '',
+          ad_group_name: meta.ad_group_name || ''
+        };
+      }));
+    }catch(e){ showError('Failed to load creatives: '+e.message); }
+    finally{ hideLoading(); }
+  }
+  renderMigratePane(pane);
+  updateMigrateSummary();
 }
 
-function renderMigrateCreatives(pane, data){
-  const p = migratePanes[pane];
-  p.panel.classList.remove('hidden');
-  p.count.textContent = `${data.count} videos`;
-  let creatives = (data.creatives||[]).slice();
-  if(pane === 'src'){
-    const order = { BEST:0, GOOD:1, LEARNING:2, PENDING:3, UNRATED:4, LOW:5 };
-    creatives.sort((a,b)=>(order[a.performance_label]??9)-(order[b.performance_label]??9));
-  }
-  // No auto-checking: the user picks what to copy / remove manually.
-  p.body.innerHTML = creatives.map(c=>{
-    const label = c.performance_label || 'UNRATED';
-    const cls = 'perf-' + label.toLowerCase();
-    const name = c.title || c.video_id || c.asset_resource;
-    const nameHtml = c.video_id
-      ? `<a href="https://youtu.be/${encodeURIComponent(c.video_id)}" target="_blank" rel="noopener">${escapeHtml(name)}</a>`
-      : escapeHtml(name);
-    let cb;
-    if(pane === 'src'){
-      const disabled = c.video_id ? '' : 'disabled title="No video id — cannot copy"';
-      cb = `<input type="checkbox" class="mig-src-cb" data-vid="${escapeHtml(c.video_id||'')}" ${disabled} onchange="updateMigrateSummary()">`;
-    } else {
-      cb = `<input type="checkbox" class="mig-remove-cb" data-asset="${escapeHtml(c.asset_resource)}" onchange="updateMigrateSummary()">`;
+// Union of creatives across the pane's groups, deduped by video_id.
+function buildMigrateUnion(ctx){
+  const map = new Map();
+  const unmatched = [];  // creatives without a video_id can't be merged across groups
+  for(const k of ctx.order){
+    const g = ctx.byGroup[k];
+    if(!g) continue;
+    for(const c of g.creatives){
+      const label = c.performance_label || 'UNRATED';
+      if(!c.video_id){
+        unmatched.push({ ...c, label, group: g });
+        continue;
+      }
+      let row = map.get(c.video_id);
+      if(!row){
+        row = { video_id: c.video_id, title: c.title || c.video_id, labels: {}, cost: 0, impressions: 0, installs: 0, groups: [] };
+        map.set(c.video_id, row);
+      }
+      if(c.title && (!row.title || row.title === row.video_id)) row.title = c.title;
+      row.labels[label] = (row.labels[label] || 0) + 1;
+      row.cost += c.cost || 0;
+      row.impressions += c.impressions || 0;
+      row.installs += c.installs || 0;
+      row.groups.push({ key: k, campaign_name: g.campaign_name, asset_resource: c.asset_resource, label });
     }
+  }
+  const rows = Array.from(map.values());
+  rows.forEach(r => { r.cvr = r.impressions ? (r.installs / r.impressions * 100) : 0; });
+  return { rows, unmatched };
+}
+
+function renderMigratePane(pane){
+  const p = migratePanes[pane];
+  const ctx = _migrate[pane];
+  const groupsCount = ctx.order.filter(k => ctx.byGroup[k]).length;
+  if(!groupsCount){ p.panel.classList.add('hidden'); p.body.innerHTML=''; return; }
+  p.panel.classList.remove('hidden');
+
+  const { rows, unmatched } = buildMigrateUnion(ctx);
+  p.count.textContent = `${rows.length + unmatched.length} unique videos · ${groupsCount} group${groupsCount>1?'s':''}`;
+
+  if(pane === 'src'){
+    rows.sort((a,b) => (MIGRATE_LABEL_ORDER[migrateBestLabel(a.labels)]??9) - (MIGRATE_LABEL_ORDER[migrateBestLabel(b.labels)]??9) || b.cost - a.cost);
+  } else {
+    rows.sort((a,b) => migrateWorstRank(b.labels) - migrateWorstRank(a.labels) || b.cost - a.cost);
+  }
+
+  const html = rows.map(r => {
+    const nameHtml = `<a href="https://youtu.be/${encodeURIComponent(r.video_id)}" target="_blank" rel="noopener">${escapeHtml(r.title)}</a>`;
+    if(pane === 'src'){
+      const label = migrateBestLabel(r.labels);
+      const multi = r.groups.length > 1 ? ` <span class="mig-groups-badge">×${r.groups.length}</span>` : '';
+      return `<tr>
+        <td style="text-align:center;"><input type="checkbox" class="mig-src-cb" data-vid="${escapeHtml(r.video_id)}" onchange="updateMigrateSummary()"></td>
+        <td class="asset-name" title="${escapeHtml(r.title)}">${nameHtml}${multi}</td>
+        <td><span class="perf-badge perf-${label.toLowerCase()}">${escapeHtml(label)}</span></td>
+        <td class="numeric cost-cell">${formatCurrency(r.cost)}</td>
+        <td class="numeric installs-cell">${formatNumber(r.installs)}</td>
+        <td class="numeric">${r.cvr.toFixed(2)}%</td>
+      </tr>`;
+    }
+    // dst: all labels with counts + In column (which campaigns contain it)
+    const badges = Object.entries(r.labels)
+      .sort((a,b)=>(MIGRATE_LABEL_ORDER[b[0]]??9)-(MIGRATE_LABEL_ORDER[a[0]]??9))
+      .map(([l,cnt])=>`<span class="perf-badge perf-${l.toLowerCase()}">${escapeHtml(l)}${cnt>1?` ×${cnt}`:''}</span>`)
+      .join(' ');
+    const inTitle = r.groups.map(g => g.campaign_name || g.key).join('\n');
+    return `<tr>
+      <td style="text-align:center;"><input type="checkbox" class="mig-remove-cb" data-vid="${escapeHtml(r.video_id)}" onchange="updateMigrateSummary()"></td>
+      <td class="asset-name" title="${escapeHtml(r.title)}">${nameHtml}</td>
+      <td><div class="perf-badges">${badges}</div></td>
+      <td class="numeric mig-in-cell" title="${escapeHtml(inTitle)}">${r.groups.length}/${groupsCount}</td>
+      <td class="numeric cost-cell">${formatCurrency(r.cost)}</td>
+      <td class="numeric installs-cell">${formatNumber(r.installs)}</td>
+      <td class="numeric">${r.cvr.toFixed(2)}%</td>
+    </tr>`;
+  }).join('');
+
+  const unmatchedHtml = unmatched.map(c => {
+    const name = c.title || c.asset_resource;
+    const where = c.group.campaign_name || c.group.ad_group_name || '';
+    const cb = pane === 'src'
+      ? `<input type="checkbox" class="mig-src-cb" disabled title="No video id — cannot copy">`
+      : `<input type="checkbox" class="mig-remove-cb" data-asset="${escapeHtml(c.asset_resource)}" onchange="updateMigrateSummary()">`;
+    const inCell = pane === 'src' ? '' : `<td class="numeric mig-in-cell" title="${escapeHtml(where)}">1/${groupsCount}</td>`;
     return `<tr>
       <td style="text-align:center;">${cb}</td>
-      <td class="asset-name" title="${escapeHtml(name)}">${nameHtml}</td>
-      <td><span class="perf-badge ${cls}">${escapeHtml(label)}</span></td>
-      <td class="numeric cost-cell">${formatCurrency(c.cost)}</td>
-      <td class="numeric installs-cell">${formatNumber(c.installs)}</td>
+      <td class="asset-name" title="${escapeHtml(name)}">${escapeHtml(name)} <span class="mig-unmatched">· ${escapeHtml(where)}</span></td>
+      <td><span class="perf-badge perf-${(c.label||'UNRATED').toLowerCase()}">${escapeHtml(c.label||'UNRATED')}</span></td>
+      ${inCell}
+      <td class="numeric cost-cell">${formatCurrency(c.cost||0)}</td>
+      <td class="numeric installs-cell">${formatNumber(c.installs||0)}</td>
       <td class="numeric">${(c.cvr||0).toFixed(2)}%</td>
     </tr>`;
   }).join('');
+
+  p.body.innerHTML = html + unmatchedHtml;
   updateMigrateSummary();
 }
 
@@ -887,69 +984,114 @@ function getMigrateAddVideoIds(){
   return Array.from(document.querySelectorAll('#src-creatives-body .mig-src-cb:checked'))
     .map(cb=>cb.dataset.vid).filter(Boolean);
 }
-function getMigrateRemoveAssets(){
-  return Array.from(document.querySelectorAll('#dst-creatives-body .mig-remove-cb:checked'))
-    .map(cb=>cb.dataset.asset);
+function getMigrateRemoveSelection(){
+  const vids = new Set();
+  const assets = new Set();
+  document.querySelectorAll('#dst-creatives-body .mig-remove-cb:checked').forEach(cb => {
+    if (cb.dataset.vid) vids.add(cb.dataset.vid);
+    else if (cb.dataset.asset) assets.add(cb.dataset.asset);
+  });
+  return { vids, assets };
+}
+
+// Per destination group: which asset_resources to remove and the predicted
+// final video count after (current − removed) ∪ added.
+function computeDstPlans(){
+  const addVids = new Set(getMigrateAddVideoIds());
+  const { vids: removeVids, assets: removeAssets } = getMigrateRemoveSelection();
+  const ctx = _migrate.dst;
+  return ctx.order.filter(k => ctx.byGroup[k]).map(k => {
+    const g = ctx.byGroup[k];
+    const groupRemoveAssets = [];
+    const remainingVids = new Set();
+    let remainingNoVid = 0;
+    for(const c of g.creatives){
+      const removed = (c.video_id && removeVids.has(c.video_id)) || removeAssets.has(c.asset_resource);
+      if(removed){ groupRemoveAssets.push(c.asset_resource); continue; }
+      if(c.video_id) remainingVids.add(c.video_id); else remainingNoVid++;
+    }
+    let finalCount = remainingVids.size + remainingNoVid;
+    for(const v of addVids){ if(!remainingVids.has(v)) finalCount++; }
+    return { group: g, removeAssets: groupRemoveAssets, finalCount };
+  });
 }
 
 function updateMigrateSummary(){
-  const dst = _migrate.dst;
-  if(!dst.ad_resource_name){ migrateFooter.classList.add('hidden'); return; }
+  const hasDst = _migrate.dst.order.some(k => _migrate.dst.byGroup[k]);
+  if(!hasDst){ migrateFooter.classList.add('hidden'); return; }
   migrateFooter.classList.remove('hidden');
+  const plans = computeDstPlans();
   const addIds = getMigrateAddVideoIds();
-  const removeAssets = getMigrateRemoveAssets();
-  const result = dst.creatives.length - removeAssets.length + addIds.length;
-  let warn = '';
-  if(result < 1) warn = ' — result would be empty';
-  else if(result > 20) warn = ' — over the 20-video limit';
-  migrateSummary.innerHTML =
-    `Copy <strong>${addIds.length}</strong> Good/Best → remove <strong>${removeAssets.length}</strong> Low ` +
-    `→ destination will have <strong>${result}</strong> videos` +
-    (warn ? `<span class="summary-warn">${warn}</span>` : '');
-  migrateApplyBtn.disabled = (result < 1 || result > 20 || (addIds.length===0 && removeAssets.length===0));
+  const removeTotal = plans.reduce((s,p)=>s+p.removeAssets.length,0);
+  const counts = plans.map(p=>p.finalCount);
+  const min = Math.min(...counts), max = Math.max(...counts);
+  const invalid = plans.filter(p => p.finalCount < 1 || p.finalCount > 20);
+  let html =
+    `Copy <strong>${addIds.length}</strong> → <strong>${plans.length}</strong> group${plans.length>1?'s':''} · ` +
+    `remove <strong>${removeTotal}</strong> · after: <strong>${min===max?min:`${min}–${max}`}</strong> videos per group`;
+  if(invalid.length){
+    html += `<div class="migrate-summary-lines">${invalid.map(p =>
+      `<div class="summary-warn">${escapeHtml(p.group.campaign_name || p.group.ad_group_name || p.group.key)}: would have ${p.finalCount}${p.finalCount>20?' (>20)':''}</div>`
+    ).join('')}</div>`;
+  }
+  migrateSummary.innerHTML = html;
+  migrateApplyBtn.disabled = invalid.length > 0 || (addIds.length === 0 && removeTotal === 0);
 }
 
 async function applyMigration(){
-  const dst = _migrate.dst;
-  if(!dst.ad_resource_name){ return showError('Select a destination ad group first'); }
+  const plans = computeDstPlans();
+  if(!plans.length){ return showError('Select at least one destination ad group'); }
   const addIds = getMigrateAddVideoIds();
-  const removeAssets = getMigrateRemoveAssets();
-  if(!addIds.length && !removeAssets.length){ return showError('Nothing to transfer — pick Good/Best on the left and/or Low on the right'); }
-  const result = dst.creatives.length - removeAssets.length + addIds.length;
-  if(result < 1){ return showError('Destination would have no videos left'); }
-  if(result > 20){ return showError('Destination would exceed the 20-video limit'); }
-  if(!confirm(`Copy ${addIds.length} video(s) into the destination and remove ${removeAssets.length} Low. Continue?`)) return;
+  const removeTotal = plans.reduce((s,p)=>s+p.removeAssets.length,0);
+  if(!addIds.length && !removeTotal){ return showError('Nothing to transfer — pick videos to copy on the left and/or remove on the right'); }
+  const invalid = plans.filter(p => p.finalCount < 1 || p.finalCount > 20);
+  if(invalid.length){ return showError('Some target groups would end up empty or over the 20-video limit — adjust selection'); }
+  if(!confirm(`Copy ${addIds.length} video(s) into ${plans.length} ad group(s) and remove ${removeTotal} video occurrence(s). Continue?`)) return;
 
   hideError(); showLoading();
+  const results = [];
   try{
-    const resp=await fetch('/api/replace_creatives',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
-      account_id: dst.account_id,
-      ad_resource_name: dst.ad_resource_name,
-      remove_asset_resources: removeAssets,
-      add_youtube_urls: addIds
-    })});
-    const data=await resp.json();
-    if(!resp.ok) throw new Error(data.detail||'Failed to apply transfer');
-    renderMigrateResults(data);
-    if(data.success){ await loadMigrateCreatives('dst'); }  // refresh destination table
-  }catch(e){ showError('Failed to apply transfer: '+e.message); }
-  finally{ hideLoading(); updateMigrateSummary(); }
+    // Sequential: one request per destination group; a failure doesn't stop the rest.
+    for(const p of plans){
+      try{
+        const resp = await fetch('/api/replace_creatives',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
+          account_id: p.group.account_id,
+          ad_resource_name: p.group.ad_resource_name,
+          remove_asset_resources: p.removeAssets,
+          add_youtube_urls: addIds
+        })});
+        const data = await resp.json();
+        if(!resp.ok) results.push({ group: p.group, success: false, error: data.detail || 'Failed', logs: data.logs });
+        else results.push({ group: p.group, ...data });
+      }catch(e){
+        results.push({ group: p.group, success: false, error: e.message });
+      }
+    }
+    renderMigrateResults(results);
+    // Refresh all destination tables to reflect the new state
+    const keys = _migrate.dst.order.slice();
+    _migrate.dst.byGroup = {};
+    await onMigrateAdgroupsChanged('dst', keys);
+  }finally{ hideLoading(); updateMigrateSummary(); }
 }
 
-function renderMigrateResults(data){
+function renderMigrateResults(results){
   migrateResults.classList.remove('hidden');
-  const logsHtml = data.logs ? `<div class="upload-logs">${data.logs.map(l=>`<div class="log-line">${escapeHtml(l)}</div>`).join('')}</div>` : '';
-  if(data.success){
-    migrateLog.innerHTML = `<div class="upload-log-item success">
-      <div class="log-header">✓ Transfer done — added ${data.added}, removed ${data.removed}, destination now ${data.total_after} videos</div>
+  migrateLog.innerHTML = results.map(r => {
+    const g = r.group || {};
+    const gname = `${g.campaign_name ? escapeHtml(g.campaign_name) + ' / ' : ''}${escapeHtml(g.ad_group_name || ('#' + (g.ad_group_id || '?')))}`;
+    const logsHtml = r.logs ? `<div class="upload-logs">${r.logs.map(l=>`<div class="log-line">${escapeHtml(l)}</div>`).join('')}</div>` : '';
+    if(r.success){
+      return `<div class="upload-log-item success">
+        <div class="log-header">✓ ${gname} — added ${r.added}, removed ${r.removed}, now ${r.total_after} videos</div>
+        ${logsHtml}
+      </div>`;
+    }
+    return `<div class="upload-log-item error">
+      <div class="log-header">✗ ${gname} — ${escapeHtml(r.error || 'Failed')}</div>
       ${logsHtml}
     </div>`;
-  } else {
-    migrateLog.innerHTML = `<div class="upload-log-item error">
-      <div class="log-header">✗ ${escapeHtml(data.error||'Failed')}</div>
-      ${logsHtml}
-    </div>`;
-  }
+  }).join('');
 }
 
 // ==================== DASHBOARD TAB ====================

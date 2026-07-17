@@ -9,7 +9,7 @@
     <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.css">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/themes/dark.css">
-    <link rel="stylesheet" href="/static/style.css?v=20260710b">
+    <link rel="stylesheet" href="/static/style.css?v=20260717">
 </head>
 <body>
     <div class="container">
@@ -305,7 +305,7 @@ https://youtu.be/ANOTHER_ID
 
         <!-- MIGRATE 2ND TOUCH TAB -->
         <div id="migrate-tab" class="tab-content">
-            <p class="edit-hint" style="margin-bottom:16px;">Second touch: copy the <strong>Good/Best</strong> videos from a test ad group (left) into a main ad group in place of its <strong>Low</strong> videos (right). Tick what to copy on the left and what to remove on the right, then Apply. Works across different accounts too.</p>
+            <p class="edit-hint" style="margin-bottom:16px;">Second touch: pick one or several donor ad groups (left) and one or several target ad groups (right). Both tables merge duplicates by video — tick what to copy on the left and what to remove on the right, then Apply once for all targets. Works across different accounts too.</p>
 
             <div class="migrate-grid">
                 <!-- SOURCE (left) -->
@@ -325,7 +325,7 @@ https://youtu.be/ANOTHER_ID
                             </div>
                         </div>
                         <div class="filter-group" style="margin-top:12px;">
-                            <label>Ad Group (pick one)</label>
+                            <label>Ad Groups (one or more)</label>
                             <div class="picker" id="src-adgroups-container">
                                 <div class="placeholder">Select campaigns first</div>
                             </div>
@@ -370,7 +370,7 @@ https://youtu.be/ANOTHER_ID
                             </div>
                         </div>
                         <div class="filter-group" style="margin-top:12px;">
-                            <label>Ad Group (pick one)</label>
+                            <label>Ad Groups (one or more)</label>
                             <div class="picker" id="dst-adgroups-container">
                                 <div class="placeholder">Select campaigns first</div>
                             </div>
@@ -387,6 +387,7 @@ https://youtu.be/ANOTHER_ID
                                         <th style="width:64px; text-align:center;">Remove</th>
                                         <th>Creative</th>
                                         <th>Perf.</th>
+                                        <th class="numeric" title="Present in N of the selected target groups">In</th>
                                         <th class="numeric">Cost</th>
                                         <th class="numeric">Inst.</th>
                                         <th class="numeric">CVR</th>
@@ -500,6 +501,6 @@ https://youtu.be/ANOTHER_ID
 
     <script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
-    <script src="/static/app.js?v=20260710b"></script>
+    <script src="/static/app.js?v=20260717"></script>
 </body>
 </html>
