@@ -24,6 +24,9 @@ import config
 IMPACT_WINDOWS = [3, 7, 14]
 DEFAULT_WINDOW = 7
 MISMATCH_TOLERANCE_DAYS = 2
+# Beyond this gap the name records when the test was set up, not when it went live,
+# so the first day of spend is the better launch date.
+NAME_DATE_TRUST_DAYS = 7
 
 # "211225" or "21.12.25" / "21-12-25" / "21_12_25", not glued to other digits.
 DATE_PATTERNS = [
@@ -61,7 +64,12 @@ def parse_ddmmyy(name: str) -> Optional[str]:
 
 
 def is_test_adgroup(name: str) -> bool:
-    return "main" not in (name or "").lower()
+    """A test ad group is dated in its own name and is not an evergreen "Main" group.
+
+    "Not Main" alone is too broad: real accounts also carry undated evergreen groups
+    ("Ad group 1", "gameplay", "android_top") that are not tests at all.
+    """
+    return "main" not in (name or "").lower() and parse_ddmmyy(name) is not None
 
 
 def classify_platform(app_store: str, campaign_name: str) -> str:
@@ -128,8 +136,15 @@ def build_adgroups(daily: pd.DataFrame, campaigns: pd.DataFrame) -> pd.DataFrame
         ["both", "name", "spend"],
         default="none",
     )
-    # The name is the intent (when the test was set up); first spend is when it went live.
-    ag["launch_date"] = ag["date_from_name"].fillna(ag["first_spend_date"])
+    # The name says when the test was set up; the first day of spend says when it started
+    # affecting the channel. They agree for most ad groups — where they diverge badly,
+    # the launch that matters for this report is the spend one.
+    trust_name = name_dt.notna() & (
+        ag["date_mismatch_days"].isna() | (ag["date_mismatch_days"].abs() <= NAME_DATE_TRUST_DAYS)
+    )
+    ag["launch_date"] = np.where(trust_name, ag["date_from_name"], ag["first_spend_date"])
+    ag["launch_date"] = ag["launch_date"].where(pd.notna(ag["launch_date"]), None)
+    ag["launch_source"] = np.where(trust_name, "name", np.where(spend_dt.notna(), "first_spend", "none"))
     ag["date_flag"] = np.where(
         ag["date_mismatch_days"].abs() > MISMATCH_TOLERANCE_DAYS, "mismatch", ""
     )
@@ -268,7 +283,7 @@ def compute_impact(campaign_series: Dict[str, pd.DataFrame], events: pd.DataFram
             "test_adgroups": ev["test_adgroups"],
         }
         for window in IMPACT_WINDOWS:
-            for metric in ("spend", "roas_d1", "icr"):
+            for metric in ("spend", "roas_d1", "icr", "test_spend_share"):
                 before = window_mean(series[metric], idx, -window, -1)
                 after = window_mean(series[metric], idx, 0, window - 1)
                 row[f"{metric}_before_{window}d"] = before
@@ -308,7 +323,24 @@ def main() -> None:
     print(f"campaigns: {len(campaigns)}  ({campaigns['platform'].value_counts().to_dict()})")
 
     adgroups = build_adgroups(daily, campaigns)
-    print(f"ad groups with stats: {len(adgroups)}  test-named: {int(adgroups['is_test'].sum())}")
+    evergreen = int((~adgroups["is_test"] & adgroups["adgroup_name"].str.contains("main", case=False, na=False)).sum())
+    print(
+        f"ad groups with stats: {len(adgroups)}  tests: {int(adgroups['is_test'].sum())}  "
+        f"Main: {evergreen}  other evergreen: {len(adgroups) - int(adgroups['is_test'].sum()) - evergreen}"
+    )
+
+    # How much of each campaign-day's Google Ads spend went to test ad groups. Tests are a
+    # minority of spend, so a launch reads very differently at 5% than at 40% of the budget.
+    test_ids = set(adgroups.loc[adgroups["is_test"], "adgroup_id"])
+    gads = daily.assign(is_test=daily["adgroup_id"].isin(test_ids))
+    gads_daily = gads.groupby(["campaign_id", "day"]).apply(
+        lambda g: pd.Series({
+            "gads_spend": g["cost"].sum(),
+            "gads_test_spend": g.loc[g["is_test"], "cost"].sum(),
+        }),
+        include_groups=False,
+    )
+    gads_daily["test_spend_share"] = safe_div(gads_daily["gads_test_spend"], gads_daily["gads_spend"])
 
     adjust = prepare_adjust(adjust_raw, plan)
     adjust, unmatched = match_campaigns(adjust, campaigns)
@@ -365,6 +397,14 @@ def main() -> None:
         ].fillna(0.0)
         s["roas_d1"] = safe_div(s["revenue_d1"], s["spend"]) if plan.get("revenue_d1_metric") else s["roas_d1"]
         s["icr"] = safe_div(s["installs"], s["impressions"])
+        if cid in gads_daily.index.get_level_values(0):
+            g = gads_daily.loc[cid].reindex(dates)
+            s["gads_spend"] = g["gads_spend"].fillna(0.0)
+            s["gads_test_spend"] = g["gads_test_spend"].fillna(0.0)
+        else:
+            s["gads_spend"] = 0.0
+            s["gads_test_spend"] = 0.0
+        s["test_spend_share"] = safe_div(s["gads_test_spend"], s["gads_spend"])
         campaign_series[cid] = s
 
     # --- test launch events ---
@@ -397,16 +437,26 @@ def main() -> None:
     joined["test_adgroup_names"] = [
         ev_lookup["test_adgroups"].get((c, d), "") for c, d in zip(joined["campaign_id"], joined["day"])
     ]
+    share_lookup = gads_daily["test_spend_share"]
+    gads_lookup = gads_daily["gads_spend"]
+    test_lookup = gads_daily["gads_test_spend"]
+    keys = list(zip(joined["campaign_id"], joined["day"]))
+    joined["gads_spend"] = [gads_lookup.get(k, 0.0) for k in keys]
+    joined["gads_test_spend"] = [test_lookup.get(k, 0.0) for k in keys]
+    joined["test_spend_share"] = [share_lookup.get(k, np.nan) for k in keys]
     joined = joined[
         ["day", "app_name", "campaign_id", "campaign_name", "platform", "spend", "installs",
-         "impressions", "clicks", "revenue_d1", "roas_d1", "icr", "tests_launched", "test_adgroup_names"]
+         "impressions", "clicks", "revenue_d1", "roas_d1", "icr",
+         "gads_spend", "gads_test_spend", "test_spend_share",
+         "tests_launched", "test_adgroup_names"]
     ].sort_values(["campaign_name", "day"])
 
     # --- outputs ---
     test_sheet = adgroups[
         ["account_id", "account_name", "campaign_id", "campaign_name", "platform", "adgroup_id",
          "adgroup_name", "adgroup_status", "is_test", "date_from_name", "first_spend_date",
-         "last_spend_date", "date_source", "date_mismatch_days", "date_flag", "launch_date",
+         "last_spend_date", "date_source", "date_mismatch_days", "date_flag",
+         "launch_date", "launch_source",
          "total_cost", "total_impressions", "total_clicks", "total_conversions", "active_days"]
     ].sort_values(["campaign_name", "launch_date"])
 
@@ -444,6 +494,8 @@ def main() -> None:
             "revenue_d1": [r(v, 2) for v in sl["revenue_d1"]],
             "roas_d1": [r(v, 5) for v in sl["roas_d1"]],
             "icr": [r(v, 6) for v in sl["icr"]],
+            "gads_spend": [r(v, 2) for v in sl["gads_spend"]],
+            "gads_test_spend": [r(v, 2) for v in sl["gads_test_spend"]],
         }
         payload_campaigns.append(
             {

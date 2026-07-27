@@ -59,6 +59,15 @@ def _enum_name(value: Any) -> str:
     return getattr(value, "name", str(value))
 
 
+def _ads_error_text(e: GoogleAdsException, limit: int = 400) -> str:
+    """The error code alone hides which field the API rejected — surface the messages."""
+    try:
+        parts = [f"{err.error_code}::{err.message}" for err in e.failure.errors]
+        return "; ".join(parts)[:limit] or str(e)[:limit]
+    except Exception:  # noqa: BLE001 - diagnostics must never mask the original failure
+        return str(e)[:limit]
+
+
 def _write_chunk(path, rows: List[dict], columns: List[str]) -> None:
     df = pd.DataFrame(rows, columns=columns) if rows else pd.DataFrame(columns=columns)
     df.to_csv(path, index=False)
@@ -95,7 +104,6 @@ CAMPAIGN_COLUMNS = [
     "campaign_name",
     "campaign_status",
     "channel_type",
-    "start_date",
     "app_id",
     "app_store",
 ]
@@ -105,10 +113,12 @@ def pull_campaigns(client: GoogleAdsClient, accounts: List[dict]) -> pd.DataFram
     """Campaign metadata including app_campaign_setting, which gives the true platform.
 
     No status filter: campaigns removed years ago still own historical ad group stats.
+    campaign.start_date is deliberately absent — the API rejects it as UNRECOGNIZED_FIELD
+    and one bad field fails the whole SELECT.
     """
     query = """
         SELECT campaign.id, campaign.name, campaign.status,
-               campaign.advertising_channel_type, campaign.start_date,
+               campaign.advertising_channel_type,
                campaign.app_campaign_setting.app_id,
                campaign.app_campaign_setting.app_store
         FROM campaign
@@ -129,7 +139,6 @@ def pull_campaigns(client: GoogleAdsClient, accounts: List[dict]) -> pd.DataFram
                         "campaign_name": r.campaign.name,
                         "campaign_status": _enum_name(r.campaign.status),
                         "channel_type": _enum_name(r.campaign.advertising_channel_type),
-                        "start_date": r.campaign.start_date or "",
                         "app_id": setting.app_id or "",
                         "app_store": _enum_name(setting.app_store) if setting.app_id else "",
                     }
@@ -144,7 +153,7 @@ def pull_campaigns(client: GoogleAdsClient, accounts: List[dict]) -> pd.DataFram
                 got = fut.result()
             except GoogleAdsException as e:
                 print(f"  !! campaigns failed for {account['account_name']} ({account['account_id']}): "
-                      f"{e.error.code().name if e.error else e}")
+                      f"{_ads_error_text(e)}")
                 continue
             print(f"  {account['account_name']}: {len(got)} campaigns")
             rows.extend(got)
@@ -210,7 +219,7 @@ def pull_adgroup_daily(
                         )
                 break
             except GoogleAdsException as e:
-                detail = e.error.code().name if e.error else str(e)
+                detail = _ads_error_text(e, limit=200)
                 if attempt == 2:
                     print(f"  !! {account['account_name']} {chunk_start}: giving up after 3 attempts ({detail})")
                     return None

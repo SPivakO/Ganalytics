@@ -14,7 +14,7 @@ const DATE_IDX = Object.create(null);
 DATES.forEach((d, i) => { DATE_IDX[d] = i; });
 
 const C = {
-  spend: "#6d72f6", roas: "#2bc9a0", icr: "#f0a13d",
+  spend: "#6d72f6", roas: "#2bc9a0", icr: "#f0a13d", share: "#a371f7",
   event: "#f0616f", grid: "rgba(255,255,255,0.07)", text: "rgba(255,255,255,0.72)",
 };
 
@@ -73,20 +73,22 @@ function campaignArrays(cid) {
       installs: expand(cid, "installs"),
       impressions: expand(cid, "impressions"),
       revenue: expand(cid, "revenue_d1"),
+      gadsSpend: expand(cid, "gads_spend"),
+      gadsTestSpend: expand(cid, "gads_test_spend"),
     });
   }
   return _cache.get(cid);
 }
 
+const SUM_KEYS = ["spend", "installs", "impressions", "revenue", "gadsSpend", "gadsTestSpend"];
+
 function sumArrays(cids) {
-  const acc = { spend: new Float64Array(N), installs: new Float64Array(N), impressions: new Float64Array(N), revenue: new Float64Array(N) };
+  const acc = {};
+  SUM_KEYS.forEach(k => { acc[k] = new Float64Array(N); });
   for (const cid of cids) {
     const a = campaignArrays(cid);
     for (let i = 0; i < N; i++) {
-      acc.spend[i] += a.spend[i];
-      acc.installs[i] += a.installs[i];
-      acc.impressions[i] += a.impressions[i];
-      acc.revenue[i] += a.revenue[i];
+      for (const k of SUM_KEYS) acc[k][i] += a[k][i];
     }
   }
   return acc;
@@ -187,6 +189,7 @@ function renderMain() {
   const spend = w > 1 ? meanRolling(acc.spend, w) : Array.from(acc.spend);
   const roas = ratioRolling(acc.revenue, acc.spend, w);
   const icr = ratioRolling(acc.installs, acc.impressions, w);
+  const share = ratioRolling(acc.gadsTestSpend, acc.gadsSpend, w);
   const dates = sliceDates();
   const evMap = eventsByDate(cids);
   const evDates = Array.from(evMap.keys()).filter(d => DATE_IDX[d] >= state.from && DATE_IDX[d] <= state.to);
@@ -245,6 +248,9 @@ function renderMain() {
       { name: "ICR", type: "line", yAxisIndex: 1, smooth: true, showSymbol: false,
         data: slice(icr).map(v => v == null ? null : v * 100),
         lineStyle: { color: C.icr, width: 2 }, itemStyle: { color: C.icr }, connectNulls: false },
+      { name: "Доля тестов в спенде", type: "line", yAxisIndex: 1, smooth: true, showSymbol: false,
+        data: slice(share).map(v => v == null ? null : v * 100),
+        lineStyle: { color: C.share, width: 1.6, type: "dashed" }, itemStyle: { color: C.share }, connectNulls: false },
       {
         name: "Запуск тестов", type: "scatter", yAxisIndex: 1,
         data: evDates.map(d => ({ value: [d, 0], n: evMap.get(d).n })),
@@ -320,14 +326,18 @@ function renderSmallMultiples() {
 function windowStats(a, lo, hi) {
   lo = Math.max(lo, 0); hi = Math.min(hi, N - 1);
   if (lo > hi) return null;
-  let spend = 0, rev = 0, inst = 0, impr = 0;
-  for (let i = lo; i <= hi; i++) { spend += a.spend[i]; rev += a.revenue[i]; inst += a.installs[i]; impr += a.impressions[i]; }
+  let spend = 0, rev = 0, inst = 0, impr = 0, gads = 0, gadsTest = 0;
+  for (let i = lo; i <= hi; i++) {
+    spend += a.spend[i]; rev += a.revenue[i]; inst += a.installs[i]; impr += a.impressions[i];
+    gads += a.gadsSpend[i]; gadsTest += a.gadsTestSpend[i];
+  }
   const days = hi - lo + 1;
   return {
     days: days,
     spend: spend / days,
     roas: spend > 0 ? rev / spend : null,
     icr: impr > 0 ? inst / impr : null,
+    share: gads > 0 ? gadsTest / gads : null,
   };
 }
 
@@ -359,6 +369,7 @@ function computeImpact() {
       roas_delta: (before.roas != null && after.roas != null) ? after.roas - before.roas : null,
       icr_before: before.icr, icr_after: after.icr,
       icr_delta: (before.icr != null && after.icr != null) ? after.icr - before.icr : null,
+      share_before: before.share, share_after: after.share,
     });
   }
   return rows;
@@ -392,6 +403,7 @@ function renderImpact(rows) {
           "<br>ROAS D1: " + fmtPct(r.roas_before) + " → " + fmtPct(r.roas_after) + " (<b>" + fmtPP(r.roas_delta) + "</b>)" +
           "<br>ICR: " + fmtPct(r.icr_before) + " → " + fmtPct(r.icr_after) +
           "<br>Спенд/день: " + fmtMoney(r.spend_before) + " → " + fmtMoney(r.spend_after) +
+          "<br>Доля тестов в спенде: " + fmtPct(r.share_before, 1) + " → " + fmtPct(r.share_after, 1) +
           '<br><span style="color:#8b939c;font-size:11px">' + escapeHtml(r.adgroups).replace(/ \| /g, "<br>") + "</span>";
       },
     },
@@ -422,6 +434,8 @@ const IMPACT_COLS = [
   { key: "icr_before", label: "ICR до", fmt: v => fmtPct(v) },
   { key: "icr_after", label: "ICR после", fmt: v => fmtPct(v) },
   { key: "icr_delta", label: "Δ ICR", fmt: fmtPP, sign: true },
+  { key: "share_before", label: "Доля тестов до", fmt: v => fmtPct(v, 1) },
+  { key: "share_after", label: "Доля тестов после", fmt: v => fmtPct(v, 1) },
 ];
 
 let impactRows = [];
