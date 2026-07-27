@@ -32,3 +32,4 @@ oneoff/adgroup_impact/raw/
 oneoff/adgroup_impact/out/
 oneoff/adgroup_impact/probe_result.json
 oneoff/adgroup_impact/vendor/
+oneoff/adgroup_impact/.venv/
