@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Тестовые адгруппы × перформанс Google-канала</title>
+<style>
+:root{
+  --canvas:#000; --surface:#141517; --surface-2:#1c1e21; --line:#2a2d31;
+  --text:#f0f2f5; --muted:#8b939c;
+  --cobalt:#6d72f6; --teal:#2bc9a0; --blue:#46a8e6; --amber:#f0a13d; --danger:#f0616f;
+  --r-lg:20px; --r-md:14px; --r-sm:9px;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--canvas);color:var(--text);
+  font:14px/1.5 Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+a{color:var(--blue)}
+.wrap{max-width:1680px;margin:0 auto;padding:28px 24px 80px}
+h1{font-size:24px;font-weight:650;margin:0 0 6px;letter-spacing:-.01em}
+h2{font-size:16px;font-weight:600;margin:0 0 4px;letter-spacing:-.01em}
+.sub{color:var(--muted);font-size:13px;margin:0}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:var(--r-lg);padding:20px;margin-top:18px}
+.card-head{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;flex-wrap:wrap;margin-bottom:14px}
+.meta{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px}
+.chip{background:var(--surface-2);border:1px solid var(--line);border-radius:999px;
+  padding:5px 12px;font-size:12px;color:var(--muted)}
+.chip b{color:var(--text);font-weight:600}
+.chip.warn{border-color:#5a3a1a;color:var(--amber)}
+
+.controls{display:flex;flex-wrap:wrap;gap:20px;align-items:flex-start;justify-content:space-between}
+.controls-left{display:flex;flex-wrap:wrap;gap:16px;align-items:flex-end}
+.ctl{display:flex;flex-direction:column;gap:6px}
+.ctl label{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)}
+select,input[type=date],input[type=search]{background:var(--surface-2);color:var(--text);
+  border:1px solid var(--line);border-radius:var(--r-sm);padding:8px 10px;font:inherit;font-size:13px;min-width:150px}
+select:focus,input:focus{outline:none;border-color:var(--cobalt)}
+.seg{display:flex;background:var(--surface-2);border:1px solid var(--line);border-radius:var(--r-sm);overflow:hidden}
+.seg button{background:transparent;border:0;color:var(--muted);padding:8px 13px;font:inherit;font-size:13px;cursor:pointer}
+.seg button.on{background:var(--cobalt);color:#fff}
+.btn{background:var(--surface-2);border:1px solid var(--line);color:var(--text);
+  border-radius:var(--r-sm);padding:8px 14px;font:inherit;font-size:13px;cursor:pointer}
+.btn:hover{border-color:var(--cobalt)}
+
+.picker{position:relative}
+.picker-list{max-height:190px;overflow:auto;background:var(--surface-2);border:1px solid var(--line);
+  border-radius:var(--r-sm);padding:6px;min-width:340px}
+.picker-list label{display:flex;gap:8px;align-items:center;padding:5px 7px;border-radius:6px;
+  font-size:13px;text-transform:none;letter-spacing:0;color:var(--text);cursor:pointer}
+.picker-list label:hover{background:#26292d}
+.picker-list .amt{margin-left:auto;color:var(--muted);font-size:12px;font-variant-numeric:tabular-nums}
+input[type=checkbox]{accent-color:var(--cobalt);width:14px;height:14px}
+
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(155px,1fr));gap:12px;margin-top:18px}
+.kpi{background:var(--surface);border:1px solid var(--line);border-radius:var(--r-md);padding:14px 16px}
+.kpi .k{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)}
+.kpi .v{font-size:23px;font-weight:640;margin-top:5px;font-variant-numeric:tabular-nums;letter-spacing:-.02em}
+
+.chart{width:100%;height:420px}
+.grid-small{display:grid;grid-template-columns:repeat(auto-fill,minmax(400px,1fr));gap:14px}
+.mini{background:var(--surface-2);border:1px solid var(--line);border-radius:var(--r-md);padding:10px}
+.mini .t{font-size:12px;font-weight:600;margin:2px 6px 4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.mini .c{height:180px}
+
+.tbl-wrap{overflow-x:auto;max-height:520px;overflow-y:auto;border:1px solid var(--line);border-radius:var(--r-md)}
+table{border-collapse:collapse;width:100%;font-size:12.5px}
+th,td{padding:8px 11px;text-align:right;white-space:nowrap;border-bottom:1px solid var(--line)}
+th:first-child,td:first-child,th.l,td.l{text-align:left}
+thead th{position:sticky;top:0;background:var(--surface-2);z-index:2;cursor:pointer;
+  font-weight:600;color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.05em}
+thead th:hover{color:var(--text)}
+tbody tr:hover{background:#1a1c1f}
+td{font-variant-numeric:tabular-nums}
+.pos{color:var(--teal)} .neg{color:var(--danger)} .dim{color:var(--muted)}
+.note{color:var(--muted);font-size:12.5px;margin:10px 0 0}
+.empty{color:var(--muted);padding:40px;text-align:center}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>Тестовые адгруппы × перформанс Google-канала</h1>
+  <p class="sub" id="subtitle"></p>
+  <div class="meta" id="meta"></div>
+
+  <div class="card">
+    <div class="controls" id="controls">
+     <div class="controls-left">
+      <div class="ctl">
+        <label>Приложение</label>
+        <select id="appSel"></select>
+      </div>
+      <div class="ctl">
+        <label>Период</label>
+        <div style="display:flex;gap:6px">
+          <input type="date" id="dateFrom"><input type="date" id="dateTo">
+        </div>
+      </div>
+      <div class="ctl">
+        <label>Сглаживание</label>
+        <div class="seg" id="smoothSeg">
+          <button data-v="1">сырое</button><button data-v="7" class="on">7 дней</button><button data-v="14">14 дней</button>
+        </div>
+      </div>
+      <div class="ctl">
+        <label>Окно до/после</label>
+        <div class="seg" id="winSeg">
+          <button data-v="3">3д</button><button data-v="7" class="on">7д</button><button data-v="14">14д</button>
+        </div>
+      </div>
+     </div>
+      <div class="ctl picker">
+        <label>Кампании <span id="campCount" class="dim"></span></label>
+        <input type="search" id="campSearch" placeholder="фильтр по названию…">
+        <div class="picker-list" id="campList"></div>
+        <div style="display:flex;gap:6px">
+          <button class="btn" id="campAll">все</button>
+          <button class="btn" id="campNone">снять</button>
+          <button class="btn" id="campTop">топ-10 по спенду</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="kpis" id="kpis"></div>
+
+  <div class="card">
+    <div class="card-head">
+      <div>
+        <h2>Динамика и запуски тестов</h2>
+        <p class="sub">Столбцы — спенд. Линии — ROAS D1 и ICR. Вертикальные метки — дни, когда в кампанию добавляли тестовые адгруппы.</p>
+      </div>
+      <select id="focusSel" style="min-width:280px"></select>
+    </div>
+    <div class="chart" id="chartMain"></div>
+  </div>
+
+  <div class="card">
+    <div class="card-head">
+      <div>
+        <h2>Все кампании разом</h2>
+        <p class="sub">Тот же срез мини-версией, чтобы поймать картину целиком.</p>
+      </div>
+      <div class="seg" id="miniMetricSeg">
+        <button data-v="roas" class="on">ROAS D1</button><button data-v="icr">ICR</button>
+      </div>
+    </div>
+    <div class="grid-small" id="smallMultiples"></div>
+  </div>
+
+  <div class="card">
+    <div class="card-head">
+      <div>
+        <h2>Эффект запуска: до vs после</h2>
+        <p class="sub" id="impactSummary"></p>
+      </div>
+      <button class="btn" id="exportImpact">скачать CSV</button>
+    </div>
+    <div class="chart" id="chartImpact" style="height:340px"></div>
+    <div class="tbl-wrap" style="margin-top:14px"><table id="impactTable"></table></div>
+  </div>
+
+  <div class="card">
+    <div class="card-head">
+      <div>
+        <h2>Недельная карта ROAS D1</h2>
+        <p class="sub">Строка — кампания, столбец — неделя. Ромбом отмечены недели с запуском тестовых адгрупп.</p>
+      </div>
+    </div>
+    <div class="chart" id="chartHeat"></div>
+  </div>
+
+  <div class="card">
+    <div class="card-head">
+      <div>
+        <h2>Связь количества тестов и ROAS</h2>
+        <p class="sub" id="corrNote"></p>
+      </div>
+      <div class="seg" id="scatterSeg">
+        <button data-v="level" class="on">ROAS недели</button><button data-v="delta">Δ к прошлой неделе</button>
+      </div>
+    </div>
+    <div class="chart" id="chartScatter" style="height:400px"></div>
+  </div>
+
+</div>
+
+<script>__ECHARTS__</script>
+<script>const DATA = __DATA__;</script>
+<script>__APP__</script>
+</body>
+</html>
