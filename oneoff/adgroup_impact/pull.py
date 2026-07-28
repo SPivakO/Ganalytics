@@ -285,7 +285,20 @@ def adjust_plan(probe: dict, args: argparse.Namespace) -> dict:
             dimensions.append(extra)
 
     metrics = ["cost", "installs"]
-    for slug in (rec.get("impressions_metric"), rec.get("clicks_metric"), rec.get("roas_metric"), rec.get("revenue_d1_metric")):
+    optional = [
+        rec.get("impressions_metric"),
+        rec.get("clicks_metric"),
+        rec.get("roas_metric"),
+        rec.get("revenue_d1_metric"),
+    ]
+    if not args.no_retention:
+        # The rate cannot be summed across campaigns; the retained-user count can, so
+        # pull both and let build.py aggregate as sum(retained)/sum(installs).
+        optional += [
+            rec.get("retention_rate_metric") or "retention_rate_d1",
+            rec.get("retained_users_metric") or "retained_users_d1",
+        ]
+    for slug in optional:
         if slug and slug not in metrics:
             metrics.append(slug)
 
@@ -309,6 +322,8 @@ def adjust_plan(probe: dict, args: argparse.Namespace) -> dict:
         "roas_metric": rec.get("roas_metric"),
         "revenue_d1_metric": rec.get("revenue_d1_metric"),
         "impressions_metric": rec.get("impressions_metric") or "network_impressions",
+        "retention_rate_metric": None if args.no_retention else (rec.get("retention_rate_metric") or "retention_rate_d1"),
+        "retained_users_metric": None if args.no_retention else (rec.get("retained_users_metric") or "retained_users_d1"),
         "clicks_metric": rec.get("clicks_metric"),
     }
 
@@ -380,6 +395,7 @@ def main() -> None:
     p.add_argument("--channel-name", default=None, help="filter by channel name instead of id (e.g. 'Google Ads')")
     p.add_argument("--cohort-maturity", default="mature", choices=["mature", "immature"])
     p.add_argument("--adgroup-dimension", action="store_true", help="also request the Adjust ad group dimension")
+    p.add_argument("--no-retention", action="store_true", help="skip the D1 retention metrics")
     p.add_argument("--skip-google", action="store_true")
     p.add_argument("--skip-adjust", action="store_true")
     args = p.parse_args()

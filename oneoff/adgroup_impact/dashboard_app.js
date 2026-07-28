@@ -28,7 +28,7 @@ const state = {
   focus: "__all__",
   miniMetric: "roas",
   scatterMode: "level",
-  decomp: "index",
+  master: "index",
   impactSort: { key: "roas_delta", dir: -1 },
 };
 
@@ -74,6 +74,7 @@ function campaignArrays(cid) {
       installs: expand(cid, "installs"),
       impressions: expand(cid, "impressions"),
       revenue: expand(cid, "revenue_d1"),
+      retained: expand(cid, "retained_d1"),
       gadsSpend: expand(cid, "gads_spend"),
       gadsTestSpend: expand(cid, "gads_test_spend"),
     });
@@ -81,7 +82,7 @@ function campaignArrays(cid) {
   return _cache.get(cid);
 }
 
-const SUM_KEYS = ["spend", "installs", "impressions", "revenue", "gadsSpend", "gadsTestSpend"];
+const SUM_KEYS = ["spend", "installs", "impressions", "revenue", "retained", "gadsSpend", "gadsTestSpend"];
 
 function sumArrays(cids) {
   const acc = {};
@@ -272,68 +273,110 @@ function renderMain() {
   }, true);
 }
 
-/* ROAS D1 == ICR * ARPU_D1 * 1000 / CPM, exactly — so a move in ROAS is always a move in
-   one of those three. Indexing each to its own period start makes the culprit visible. */
-function renderDecomp() {
+/* One chart for every headline metric at once. Spend keeps its own money axis; the five
+   rates live on a shared normalised axis because $0.0008 ARPU and 80% ROAS cannot share
+   a scale. The tooltip always reports the real value in its own unit. */
+const MASTER_SERIES = [
+  { key: "roas",  name: "ROAS D1",      color: "#2bc9a0", unit: "pct",   digits: 2, width: 2.6 },
+  { key: "icr",   name: "ICR",          color: "#f0a13d", unit: "pct",   digits: 3, width: 1.8 },
+  { key: "ret",   name: "Retention D1", color: "#46a8e6", unit: "pct",   digits: 2, width: 1.8 },
+  { key: "arpu",  name: "ARPU D1",      color: "#a371f7", unit: "money4", digits: 4, width: 1.8 },
+  { key: "cpm",   name: "CPM",          color: "#f0616f", unit: "money2", digits: 3, width: 1.8 },
+];
+
+function renderMaster() {
   const cids = state.focus === "__all__" ? activeCampaigns().map(c => c.id) : [state.focus];
   const acc = sumArrays(cids);
   const w = state.smooth;
-  const roas = ratioRolling(acc.revenue, acc.spend, w);
-  const icr = ratioRolling(acc.installs, acc.impressions, w);
-  const arpu = ratioRolling(acc.revenue, acc.installs, w);
-  const cpm = ratioRolling(acc.spend, acc.impressions, w);
   const dates = sliceDates();
 
-  const cpmScaled = cpm.map(v => v == null ? null : v * 1000);
-  const indexed = state.decomp === "index";
+  const raw = {
+    roas: ratioRolling(acc.revenue, acc.spend, w),
+    icr: ratioRolling(acc.installs, acc.impressions, w),
+    ret: ratioRolling(acc.retained, acc.installs, w),
+    arpu: ratioRolling(acc.revenue, acc.installs, w),
+    cpm: ratioRolling(acc.spend, acc.impressions, w).map(v => v == null ? null : v * 1000),
+  };
+  const spend = w > 1 ? meanRolling(acc.spend, w) : Array.from(acc.spend);
+  const mode = state.master;
 
-  function firstValid(arr) {
-    for (let i = state.from; i <= state.to; i++) if (arr[i] != null && arr[i] > 0) return arr[i];
-    return null;
+  function normalise(arr) {
+    const win = arr.slice(state.from, state.to + 1);
+    if (mode === "raw") return win;
+    if (mode === "index") {
+      const base = win.find(v => v != null && v > 0);
+      return base ? win.map(v => v == null ? null : 100 * v / base) : win.map(() => null);
+    }
+    const vals = win.filter(v => v != null);
+    if (!vals.length) return win;
+    const lo = Math.min(...vals), hi = Math.max(...vals);
+    return hi > lo ? win.map(v => v == null ? null : 100 * (v - lo) / (hi - lo)) : win.map(v => v == null ? null : 50);
   }
-  function prep(arr, scale) {
-    const base = indexed ? firstValid(arr) : null;
-    return slice(arr).map(v => v == null ? null : (indexed ? (base ? 100 * v / base : null) : v * (scale || 1)));
-  }
 
-  const series = [
-    { name: "ROAS D1", data: prep(roas, 100), color: C.roas, width: 2.4 },
-    { name: "ICR", data: prep(icr, 100), color: C.icr, width: 1.8 },
-    { name: "ARPU D1", data: prep(arpu, 1), color: C.share, width: 1.8 },
-    { name: "CPM", data: prep(cpmScaled, 1), color: C.spend, width: 1.8 },
-  ];
+  const norm = {};
+  MASTER_SERIES.forEach(m => { norm[m.key] = normalise(raw[m.key]); });
+  const rawWin = {};
+  MASTER_SERIES.forEach(m => { rawWin[m.key] = raw[m.key].slice(state.from, state.to + 1); });
 
-  document.getElementById("decompNote").innerHTML = indexed
-    ? "Каждая метрика приведена к 100 на первый день периода. ROAS D1 = ICR × ARPU D1 ÷ CPM — тождество, поэтому индекс ROAS всегда равен индексу ICR × индекс ARPU ÷ индекс CPM. Видно, какой рычаг двигал результат."
-    : "Абсолютные значения: ROAS D1 и ICR в процентах, ARPU D1 и CPM в долларах.";
+  const fmtUnit = (v, m) => v == null ? "—"
+    : m.unit === "pct" ? (v * 100).toFixed(m.digits) + "%"
+    : "$" + v.toFixed(m.unit === "money4" ? 4 : 3);
 
-  chart("chartDecomp").setOption({
+  const evMap = eventsByDate(cids);
+  const evDates = Array.from(evMap.keys()).filter(d => DATE_IDX[d] >= state.from && DATE_IDX[d] <= state.to);
+
+  document.getElementById("masterNote").innerHTML =
+    (mode === "index" ? "Каждая метрика приведена к 100 на первый день периода — сравнимы относительные движения. "
+     : mode === "minmax" ? "Каждая метрика растянута на 0–100 по своему минимуму и максимуму за период — сравнима форма кривой. "
+     : "Реальные значения на одной оси: проценты и доллары вперемешку, читается только при выборе одной-двух метрик. ") +
+    "Спенд — серая заливка на своей денежной оси. В подсказке всегда настоящие числа. " +
+    "Клик по названию в легенде убирает метрику с графика.";
+
+  chart("chartMaster").setOption({
     backgroundColor: "transparent", animation: false,
-    grid: { left: 62, right: 24, top: 34, bottom: 40 },
+    grid: { left: 68, right: 68, top: 38, bottom: 58 },
     legend: { top: 0, textStyle: { color: C.text }, itemWidth: 14, itemHeight: 8 },
     tooltip: {
       trigger: "axis", backgroundColor: "#1c1e21", borderColor: "#2a2d31",
       textStyle: { color: "#f0f2f5", fontSize: 12 },
       formatter(params) {
-        let html = "<b>" + params[0].axisValue + "</b>";
-        for (const p of params) {
-          if (p.value == null) continue;
-          const v = indexed ? p.value.toFixed(1)
-            : (p.seriesName === "ROAS D1" || p.seriesName === "ICR") ? p.value.toFixed(2) + "%"
-            : "$" + p.value.toFixed(p.seriesName === "CPM" ? 2 : 4);
-          html += "<br>" + p.marker + p.seriesName + ": <b>" + v + "</b>";
+        const i = params.length ? params[0].dataIndex : 0;
+        let html = "<b>" + dates[i] + "</b>";
+        html += "<br>" + '<span style="color:' + C.text + '">Спенд</span>: <b>' + fmtMoney(spend[state.from + i]) + "</b>";
+        for (const m of MASTER_SERIES) {
+          const v = rawWin[m.key][i];
+          if (v == null) continue;
+          html += '<br><span style="color:' + m.color + '">●</span> ' + m.name + ": <b>" + fmtUnit(v, m) + "</b>";
         }
+        const ev = evMap.get(dates[i]);
+        if (ev) html += '<br><span style="color:' + C.event + '">▲ запущено тестовых адгрупп: <b>' + ev.n + "</b></span>";
         return html;
       },
     },
     xAxis: Object.assign({ type: "category", data: dates }, axisCommon, { splitLine: { show: false } }),
-    yAxis: Object.assign({ type: "value", scale: true,
-      axisLabel: { color: C.text, fontSize: 11, formatter: v => indexed ? v.toFixed(0) : v.toFixed(2) } }, axisCommon),
-    dataZoom: [{ type: "inside" }],
-    series: series.map(s => ({
-      name: s.name, type: "line", showSymbol: false, smooth: true, data: s.data,
-      lineStyle: { color: s.color, width: s.width }, itemStyle: { color: s.color }, connectNulls: false,
-    })),
+    yAxis: [
+      Object.assign({ type: "value", name: "спенд", nameTextStyle: { color: C.text, fontSize: 11 },
+        axisLabel: { color: C.text, fontSize: 11, formatter: v => "$" + nf.format(v) } }, axisCommon),
+      Object.assign({ type: "value", scale: true, position: "right",
+        name: mode === "index" ? "индекс" : mode === "minmax" ? "0–100" : "значение",
+        nameTextStyle: { color: C.text, fontSize: 11 },
+        axisLabel: { color: C.text, fontSize: 11, formatter: v => mode === "raw" ? v.toFixed(2) : v.toFixed(0) },
+        splitLine: { show: false } }, axisCommon),
+    ],
+    dataZoom: [{ type: "inside" }, { type: "slider", height: 18, bottom: 12, borderColor: "#2a2d31",
+      backgroundColor: "#1c1e21", fillerColor: "rgba(109,114,246,0.18)", textStyle: { color: C.text, fontSize: 10 } }],
+    series: [
+      { name: "Спенд", type: "line", yAxisIndex: 0, showSymbol: false, smooth: true,
+        data: slice(spend), lineStyle: { color: "rgba(139,147,156,0.55)", width: 1 },
+        areaStyle: { color: "rgba(109,114,246,0.16)" }, z: 1,
+        markLine: { silent: true, symbol: "none", label: { show: false },
+          lineStyle: { color: "rgba(240,97,111,0.32)", width: 1 },
+          data: evDates.length <= 40 ? markLineData(evDates) : [] } },
+    ].concat(MASTER_SERIES.map(m => ({
+      name: m.name, type: "line", yAxisIndex: 1, showSymbol: false, smooth: true,
+      data: norm[m.key], lineStyle: { color: m.color, width: m.width },
+      itemStyle: { color: m.color }, connectNulls: false, z: 3,
+    }))),
   }, true);
 }
 
@@ -816,7 +859,7 @@ function renderAll() {
   buildFocusSelect();
   renderKpis();
   renderMain();
-  renderDecomp();
+  renderMaster();
   renderSmallMultiples();
   renderImpact(computeImpact());
   renderHeatmap();
@@ -861,13 +904,13 @@ function init() {
   };
   from.onchange = to.onchange = onDate;
 
-  segment("smoothSeg", v => { state.smooth = +v; renderMain(); renderDecomp(); renderSmallMultiples(); });
+  segment("smoothSeg", v => { state.smooth = +v; renderMain(); renderMaster(); renderSmallMultiples(); });
   segment("winSeg", v => { state.window = +v; renderImpact(computeImpact()); });
   segment("miniMetricSeg", v => { state.miniMetric = v; renderSmallMultiples(); });
   segment("scatterSeg", v => { state.scatterMode = v; renderScatter(); });
-  segment("decompSeg", v => { state.decomp = v; renderDecomp(); });
+  segment("masterSeg", v => { state.master = v; renderMaster(); });
 
-  document.getElementById("focusSel").onchange = e => { state.focus = e.target.value; renderMain(); renderDecomp(); };
+  document.getElementById("focusSel").onchange = e => { state.focus = e.target.value; renderMain(); renderMaster(); };
   document.getElementById("campSearch").oninput = buildCampaignList;
   document.getElementById("campAll").onclick = () => {
     appCampaigns().forEach(c => state.selected.add(c.id));

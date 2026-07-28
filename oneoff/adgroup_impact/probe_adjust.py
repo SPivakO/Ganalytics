@@ -59,6 +59,10 @@ METRIC_CANDIDATES = [
     "roas_d1",
     "roas_d0",
     "roas_d7",
+    # retention, cohort based
+    "retention_rate_d1",
+    "retention_rate_d7",
+    "retained_users_d1",
     # rates
     "click_conversion_rate",
     "impression_conversion_rate",
@@ -243,6 +247,8 @@ def main() -> None:
                 (m for m in ("network_impressions", "impressions") if m in ok_metrics), None
             ),
             "clicks_metric": next((m for m in ("clicks", "network_clicks") if m in ok_metrics), None),
+            "retention_rate_metric": "retention_rate_d1" if "retention_rate_d1" in ok_metrics else None,
+            "retained_users_metric": "retained_users_d1" if "retained_users_d1" in ok_metrics else None,
         },
     }
     config.PROBE_RESULT.write_text(json.dumps(result, indent=2, ensure_ascii=False))

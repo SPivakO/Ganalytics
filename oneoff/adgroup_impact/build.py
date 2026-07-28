@@ -183,13 +183,15 @@ def prepare_adjust(adjust: pd.DataFrame, plan: dict, use_adjust_roas: bool = Tru
         ("clicks", plan.get("clicks_metric")),
         ("revenue_d1", plan.get("revenue_d1_metric")),
         ("roas_d1_raw", plan.get("roas_metric")),
+        ("retained_d1", plan.get("retained_users_metric")),
+        ("retention_rate_d1_raw", plan.get("retention_rate_metric")),
     ]:
         df[target] = pd.to_numeric(df[source], errors="coerce").fillna(0.0) if source and source in df.columns else 0.0
 
     group_cols = ["day", "app_token", "app_name", "adjust_campaign", "adjust_campaign_id"]
     if adgroup_dim:
         group_cols.append("adjust_adgroup")
-    value_cols = ["spend", "installs", "impressions", "clicks", "revenue_d1"]
+    value_cols = ["spend", "installs", "impressions", "clicks", "revenue_d1", "retained_d1"]
     agg = df.groupby(group_cols, as_index=False)[value_cols].sum()
 
     # Adjust's own roas_d1 is the authority here. Its cohort revenue is several times the
@@ -207,6 +209,16 @@ def prepare_adjust(adjust: pd.DataFrame, plan: dict, use_adjust_roas: bool = Tru
         agg["revenue_d1"] = agg["revenue_d1_reported"]
         agg["roas_source"] = (plan.get("revenue_d1_metric") or "revenue") + "/spend"
     agg["roas_d1"] = safe_div(agg["revenue_d1"], agg["spend"])
+
+    # retention_rate_d1 is a ratio and cannot be summed; retained_users_d1 can.
+    if (agg["retained_d1"] > 0).any():
+        agg["retention_d1"] = safe_div(agg["retained_d1"], agg["installs"])
+    else:
+        wr = df.assign(_w=df["retention_rate_d1_raw"] * df["installs"]).groupby(group_cols, as_index=False)["_w"].sum()
+        agg = agg.merge(wr, on=group_cols, how="left")
+        agg["retained_d1"] = agg["_w"].fillna(0.0)
+        agg["retention_d1"] = safe_div(agg["retained_d1"], agg["installs"])
+        agg = agg.drop(columns=["_w"])
 
     agg["icr"] = safe_div(agg["installs"], agg["impressions"])
     agg["norm_campaign"] = agg["adjust_campaign"].map(norm_name)
@@ -377,11 +389,13 @@ def main() -> None:
             impressions=("impressions", "sum"),
             clicks=("clicks", "sum"),
             revenue_d1=("revenue_d1", "sum"),
+            retained_d1=("retained_d1", "sum"),
             app_name=("app_name", "first"),
         )
     )
     per_campaign["roas_d1"] = safe_div(per_campaign["revenue_d1"], per_campaign["spend"])
     per_campaign["icr"] = safe_div(per_campaign["installs"], per_campaign["impressions"])
+    per_campaign["retention_d1"] = safe_div(per_campaign["retained_d1"], per_campaign["installs"])
 
     all_dates = pd.date_range(per_campaign["day"].min(), per_campaign["day"].max(), freq="D")
     dates = [d.strftime("%Y-%m-%d") for d in all_dates]
@@ -389,15 +403,15 @@ def main() -> None:
     campaign_series: Dict[str, pd.DataFrame] = {}
     for cid, grp in per_campaign.groupby("campaign_id"):
         s = grp.set_index("day").reindex(dates)
-        s[["spend", "installs", "impressions", "clicks", "revenue_d1"]] = s[
-            ["spend", "installs", "impressions", "clicks", "revenue_d1"]
-        ].fillna(0.0)
+        cols = ["spend", "installs", "impressions", "clicks", "revenue_d1", "retained_d1"]
+        s[cols] = s[cols].fillna(0.0)
         s["roas_d1"] = safe_div(s["revenue_d1"], s["spend"])
         s["icr"] = safe_div(s["installs"], s["impressions"])
         # ROAS D1 == ICR * ARPU_D1 * 1000 / CPM, exactly. Carrying the two other factors
         # lets the dashboard show which lever actually moved.
         s["arpu_d1"] = safe_div(s["revenue_d1"], s["installs"])
         s["cpm"] = safe_div(1000 * s["spend"], s["impressions"])
+        s["retention_d1"] = safe_div(s["retained_d1"], s["installs"])
         if cid in gads_daily.index.get_level_values(0):
             g = gads_daily.loc[cid].reindex(dates)
             s["gads_spend"] = g["gads_spend"].fillna(0.0)
@@ -447,7 +461,7 @@ def main() -> None:
     joined["test_spend_share"] = [share_lookup.get(k, np.nan) for k in keys]
     joined = joined[
         ["day", "app_name", "campaign_id", "campaign_name", "platform", "spend", "installs",
-         "impressions", "clicks", "revenue_d1", "roas_d1", "icr",
+         "impressions", "clicks", "revenue_d1", "roas_d1", "icr", "retained_d1", "retention_d1",
          "gads_spend", "gads_test_spend", "test_spend_share",
          "tests_launched", "test_adgroup_names"]
     ].sort_values(["campaign_name", "day"])
@@ -497,6 +511,8 @@ def main() -> None:
             "icr": [r(v, 6) for v in sl["icr"]],
             "arpu_d1": [r(v, 6) for v in sl["arpu_d1"]],
             "cpm": [r(v, 4) for v in sl["cpm"]],
+            "retained_d1": [r(v, 0) for v in sl["retained_d1"]],
+            "retention_d1": [r(v, 5) for v in sl["retention_d1"]],
             "gads_spend": [r(v, 2) for v in sl["gads_spend"]],
             "gads_test_spend": [r(v, 2) for v in sl["gads_test_spend"]],
         }
