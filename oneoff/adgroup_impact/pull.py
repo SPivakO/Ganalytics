@@ -263,9 +263,16 @@ def adjust_plan(probe: dict, args: argparse.Namespace) -> dict:
     channel_id = args.channel_id or rec.get("channel_id")
     channel_name = args.channel_name or rec.get("channel_name")
 
+    # Prefer the network: the "Google Ads" channel bundles "Google Ads (Ad Spend)",
+    # which holds every dollar of cost and zero installs, with "Google Ads ACI", which
+    # holds the installs and revenue. Filtering the channel mixes those rows together.
+    if args.network:
+        channel_dim = "network"
+        channel_filter = {"network__in": f'"{args.network}"'}
+        channel_label = args.network
     # This account's channel dimension carries no id column, so filter by the readable
     # name instead — "<dim>__in" accepts it and returns exactly that channel.
-    if channel_id:
+    elif channel_id:
         channel_filter = {"channel_id__in": f'"{channel_id}"'}
         channel_label = channel_id
     elif channel_name:
@@ -314,6 +321,7 @@ def adjust_plan(probe: dict, args: argparse.Namespace) -> dict:
         "channel_dimension": channel_dim,
         "channel_filter": channel_filter,
         "channel_label": channel_label,
+        "ad_revenue_source": args.ad_revenue_source or None,
         "dimensions": dimensions,
         "metrics": metrics,
         "campaign_dimension": campaign_dim,
@@ -326,6 +334,15 @@ def adjust_plan(probe: dict, args: argparse.Namespace) -> dict:
         "retained_users_metric": None if args.no_retention else (rec.get("retained_users_metric") or "retained_users_d1"),
         "clicks_metric": rec.get("clicks_metric"),
     }
+
+
+def request_filters(plan: dict) -> Dict[str, str]:
+    """Channel/network filter plus the ad-revenue-source restriction, if configured."""
+    extra = dict(plan["channel_filter"])
+    if plan.get("ad_revenue_source"):
+        # Deliberately unquoted: Adjust rejects a quoted value for this parameter.
+        extra["ad_revenue_sources"] = plan["ad_revenue_source"]
+    return extra
 
 
 def pull_adjust(
@@ -353,7 +370,7 @@ def pull_adjust(
                     store_type=config.STORE_TYPE,
                     index="day",
                     cohort_maturity=cohort_maturity,
-                    extra=plan["channel_filter"],
+                    extra=request_filters(plan),
                     timeout=300,
                 )
             except Exception as e:  # noqa: BLE001 - one bad month should not kill the run
@@ -393,6 +410,10 @@ def main() -> None:
     p.add_argument("--apps", default=",".join(config.APPS), help="comma-separated Adjust app tokens")
     p.add_argument("--channel-id", default=None, help="override the Google channel id from probe_result.json")
     p.add_argument("--channel-name", default=None, help="filter by channel name instead of id (e.g. 'Google Ads')")
+    p.add_argument("--ad-revenue-source", default=config.AD_REVENUE_SOURCE,
+                   help="restrict ad revenue to one source (default: %(default)s); pass '' for all sources")
+    p.add_argument("--network", default=config.NETWORK,
+                   help="filter at network level (default: %(default)s); pass '' to fall back to the channel")
     p.add_argument("--cohort-maturity", default="mature", choices=["mature", "immature"])
     p.add_argument("--adgroup-dimension", action="store_true", help="also request the Adjust ad group dimension")
     p.add_argument("--no-retention", action="store_true", help="skip the D1 retention metrics")
@@ -424,7 +445,7 @@ def main() -> None:
         probe = load_probe()
         plan = adjust_plan(probe, args)
         print(f"\n== adjust (channel: {plan['channel_label']}) ==")
-        print(f"  filter:     {plan['channel_filter']}")
+        print(f"  filter:     {request_filters(plan)}")
         print(f"  dimensions: {plan['dimensions']}")
         print(f"  metrics:    {plan['metrics']}")
         adjust_df = pull_adjust(

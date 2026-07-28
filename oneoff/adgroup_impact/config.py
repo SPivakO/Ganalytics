@@ -27,6 +27,17 @@ DEFAULT_END = "2026-06-30"
 PLATFORM = "Android"
 STORE_TYPE = "google_play"
 
+# Filter at network level, not channel. The "Google Ads" channel also carries
+# "Google Ads (Ad Spend)" (all the cost, no installs) and "Google Ads ACE", so a
+# channel-level pull mixes feeds that belong to different rows.
+NETWORK = "Google Ads ACI"
+
+# Revenue is AppLovin MAX only. Without this filter Adjust counts every connected ad
+# revenue source and roas_d1 comes back roughly 1.85x the figure the Adjust UI reports.
+# The value must go through unquoted — "Applovin MAX SDK" in quotes is rejected, and
+# note the lowercase l, which is how Adjust spells it.
+AD_REVENUE_SOURCE = "Applovin MAX SDK"
+
 
 def adjust_token() -> str:
     token = os.environ.get("ADJUST_API_TOKEN", "").strip()
