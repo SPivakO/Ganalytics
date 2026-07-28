@@ -28,6 +28,7 @@ const state = {
   focus: "__all__",
   miniMetric: "roas",
   scatterMode: "level",
+  decomp: "index",
   impactSort: { key: "roas_delta", dir: -1 },
 };
 
@@ -268,6 +269,71 @@ function renderMain() {
         itemStyle: { color: C.event }, tooltip: { show: false }, z: 5,
       },
     ],
+  }, true);
+}
+
+/* ROAS D1 == ICR * ARPU_D1 * 1000 / CPM, exactly — so a move in ROAS is always a move in
+   one of those three. Indexing each to its own period start makes the culprit visible. */
+function renderDecomp() {
+  const cids = state.focus === "__all__" ? activeCampaigns().map(c => c.id) : [state.focus];
+  const acc = sumArrays(cids);
+  const w = state.smooth;
+  const roas = ratioRolling(acc.revenue, acc.spend, w);
+  const icr = ratioRolling(acc.installs, acc.impressions, w);
+  const arpu = ratioRolling(acc.revenue, acc.installs, w);
+  const cpm = ratioRolling(acc.spend, acc.impressions, w);
+  const dates = sliceDates();
+
+  const cpmScaled = cpm.map(v => v == null ? null : v * 1000);
+  const indexed = state.decomp === "index";
+
+  function firstValid(arr) {
+    for (let i = state.from; i <= state.to; i++) if (arr[i] != null && arr[i] > 0) return arr[i];
+    return null;
+  }
+  function prep(arr, scale) {
+    const base = indexed ? firstValid(arr) : null;
+    return slice(arr).map(v => v == null ? null : (indexed ? (base ? 100 * v / base : null) : v * (scale || 1)));
+  }
+
+  const series = [
+    { name: "ROAS D1", data: prep(roas, 100), color: C.roas, width: 2.4 },
+    { name: "ICR", data: prep(icr, 100), color: C.icr, width: 1.8 },
+    { name: "ARPU D1", data: prep(arpu, 1), color: C.share, width: 1.8 },
+    { name: "CPM", data: prep(cpmScaled, 1), color: C.spend, width: 1.8 },
+  ];
+
+  document.getElementById("decompNote").innerHTML = indexed
+    ? "Каждая метрика приведена к 100 на первый день периода. ROAS D1 = ICR × ARPU D1 ÷ CPM — тождество, поэтому индекс ROAS всегда равен индексу ICR × индекс ARPU ÷ индекс CPM. Видно, какой рычаг двигал результат."
+    : "Абсолютные значения: ROAS D1 и ICR в процентах, ARPU D1 и CPM в долларах.";
+
+  chart("chartDecomp").setOption({
+    backgroundColor: "transparent", animation: false,
+    grid: { left: 62, right: 24, top: 34, bottom: 40 },
+    legend: { top: 0, textStyle: { color: C.text }, itemWidth: 14, itemHeight: 8 },
+    tooltip: {
+      trigger: "axis", backgroundColor: "#1c1e21", borderColor: "#2a2d31",
+      textStyle: { color: "#f0f2f5", fontSize: 12 },
+      formatter(params) {
+        let html = "<b>" + params[0].axisValue + "</b>";
+        for (const p of params) {
+          if (p.value == null) continue;
+          const v = indexed ? p.value.toFixed(1)
+            : (p.seriesName === "ROAS D1" || p.seriesName === "ICR") ? p.value.toFixed(2) + "%"
+            : "$" + p.value.toFixed(p.seriesName === "CPM" ? 2 : 4);
+          html += "<br>" + p.marker + p.seriesName + ": <b>" + v + "</b>";
+        }
+        return html;
+      },
+    },
+    xAxis: Object.assign({ type: "category", data: dates }, axisCommon, { splitLine: { show: false } }),
+    yAxis: Object.assign({ type: "value", scale: true,
+      axisLabel: { color: C.text, fontSize: 11, formatter: v => indexed ? v.toFixed(0) : v.toFixed(2) } }, axisCommon),
+    dataZoom: [{ type: "inside" }],
+    series: series.map(s => ({
+      name: s.name, type: "line", showSymbol: false, smooth: true, data: s.data,
+      lineStyle: { color: s.color, width: s.width }, itemStyle: { color: s.color }, connectNulls: false,
+    })),
   }, true);
 }
 
@@ -750,6 +816,7 @@ function renderAll() {
   buildFocusSelect();
   renderKpis();
   renderMain();
+  renderDecomp();
   renderSmallMultiples();
   renderImpact(computeImpact());
   renderHeatmap();
@@ -794,12 +861,13 @@ function init() {
   };
   from.onchange = to.onchange = onDate;
 
-  segment("smoothSeg", v => { state.smooth = +v; renderMain(); renderSmallMultiples(); });
+  segment("smoothSeg", v => { state.smooth = +v; renderMain(); renderDecomp(); renderSmallMultiples(); });
   segment("winSeg", v => { state.window = +v; renderImpact(computeImpact()); });
   segment("miniMetricSeg", v => { state.miniMetric = v; renderSmallMultiples(); });
   segment("scatterSeg", v => { state.scatterMode = v; renderScatter(); });
+  segment("decompSeg", v => { state.decomp = v; renderDecomp(); });
 
-  document.getElementById("focusSel").onchange = e => { state.focus = e.target.value; renderMain(); };
+  document.getElementById("focusSel").onchange = e => { state.focus = e.target.value; renderMain(); renderDecomp(); };
   document.getElementById("campSearch").oninput = buildCampaignList;
   document.getElementById("campAll").onclick = () => {
     appCampaigns().forEach(c => state.selected.add(c.id));

@@ -161,7 +161,7 @@ def build_adgroups(daily: pd.DataFrame, campaigns: pd.DataFrame) -> pd.DataFrame
 # -------------------------------------------------------------------------- adjust
 
 
-def prepare_adjust(adjust: pd.DataFrame, plan: dict) -> pd.DataFrame:
+def prepare_adjust(adjust: pd.DataFrame, plan: dict, use_adjust_roas: bool = True) -> pd.DataFrame:
     """Rename Adjust's account-specific slugs to a fixed schema and derive ROAS D1 / ICR."""
     campaign_dim = plan["campaign_dimension"]
     impressions_metric = plan.get("impressions_metric") or "network_impressions"
@@ -192,22 +192,21 @@ def prepare_adjust(adjust: pd.DataFrame, plan: dict) -> pd.DataFrame:
     value_cols = ["spend", "installs", "impressions", "clicks", "revenue_d1"]
     agg = df.groupby(group_cols, as_index=False)[value_cols].sum()
 
-    # Prefer deriving ROAS from revenue: Adjust's own roas_* slug can be a fraction or a
-    # percentage depending on the account, and it cannot be re-aggregated across rows.
-    if plan.get("revenue_d1_metric"):
-        agg["roas_d1"] = safe_div(agg["revenue_d1"], agg["spend"])
-        agg["roas_source"] = "revenue_d1/spend"
-    else:
+    # Adjust's own roas_d1 is the authority here. Its cohort revenue is several times the
+    # *_revenue_d1 columns, which capture only part of the AppLovin MAX ad-revenue feed,
+    # so deriving ROAS from those understates it. Revenue is reconstructed as
+    # roas_d1 * spend, which keeps every downstream sum and ratio consistent with it.
+    agg = agg.rename(columns={"revenue_d1": "revenue_d1_reported"})
+    if use_adjust_roas:
         weighted = df.assign(_w=df["roas_d1_raw"] * df["spend"]).groupby(group_cols, as_index=False)["_w"].sum()
         agg = agg.merge(weighted, on=group_cols, how="left")
-        agg["roas_d1"] = safe_div(agg["_w"], agg["spend"])
+        agg["revenue_d1"] = agg["_w"].fillna(0.0)
         agg = agg.drop(columns=["_w"])
-        agg["roas_source"] = plan.get("roas_metric") or "unavailable"
-        # Adjust returns ROAS as a percentage in some accounts; normalise to a ratio.
-        median = agg.loc[agg["roas_d1"] > 0, "roas_d1"].median()
-        if pd.notna(median) and median > 3:
-            agg["roas_d1"] = agg["roas_d1"] / 100.0
-            agg["roas_source"] += " (÷100, looked like a percentage)"
+        agg["roas_source"] = plan.get("roas_metric") or "roas_d1"
+    else:
+        agg["revenue_d1"] = agg["revenue_d1_reported"]
+        agg["roas_source"] = (plan.get("revenue_d1_metric") or "revenue") + "/spend"
+    agg["roas_d1"] = safe_div(agg["revenue_d1"], agg["spend"])
 
     agg["icr"] = safe_div(agg["installs"], agg["impressions"])
     agg["norm_campaign"] = agg["adjust_campaign"].map(norm_name)
@@ -302,6 +301,8 @@ def compute_impact(campaign_series: Dict[str, pd.DataFrame], events: pd.DataFram
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--platform", default=config.PLATFORM, help="Android, iOS, or 'all'")
+    p.add_argument("--roas-source", default="adjust", choices=["adjust", "revenue"],
+                   help="'adjust' uses Adjust's own roas_d1; 'revenue' derives it from the *_revenue_d1 columns")
     args = p.parse_args()
 
     config.ensure_dirs()
@@ -342,7 +343,9 @@ def main() -> None:
     )
     gads_daily["test_spend_share"] = safe_div(gads_daily["gads_test_spend"], gads_daily["gads_spend"])
 
-    adjust = prepare_adjust(adjust_raw, plan)
+    adjust = prepare_adjust(adjust_raw, plan, use_adjust_roas=(args.roas_source == "adjust"))
+    roas_label = str(adjust["roas_source"].iloc[0]) if len(adjust) else "n/a"
+    print(f"ROAS D1 source: {roas_label}")
     adjust, unmatched = match_campaigns(adjust, campaigns)
     matched_spend = adjust.loc[adjust["campaign_id"].notna(), "spend"].sum()
     total_spend = adjust["spend"].sum()
@@ -379,12 +382,6 @@ def main() -> None:
     )
     per_campaign["roas_d1"] = safe_div(per_campaign["revenue_d1"], per_campaign["spend"])
     per_campaign["icr"] = safe_div(per_campaign["installs"], per_campaign["impressions"])
-    if not plan.get("revenue_d1_metric"):
-        # No revenue metric: carry the ROAS Adjust computed, weighted by spend.
-        weighted = adjust.assign(_w=adjust["roas_d1"] * adjust["spend"]).groupby(["campaign_id", "day"], as_index=False)["_w"].sum()
-        per_campaign = per_campaign.merge(weighted, on=["campaign_id", "day"], how="left")
-        per_campaign["roas_d1"] = safe_div(per_campaign["_w"], per_campaign["spend"])
-        per_campaign = per_campaign.drop(columns=["_w"])
 
     all_dates = pd.date_range(per_campaign["day"].min(), per_campaign["day"].max(), freq="D")
     dates = [d.strftime("%Y-%m-%d") for d in all_dates]
@@ -395,8 +392,12 @@ def main() -> None:
         s[["spend", "installs", "impressions", "clicks", "revenue_d1"]] = s[
             ["spend", "installs", "impressions", "clicks", "revenue_d1"]
         ].fillna(0.0)
-        s["roas_d1"] = safe_div(s["revenue_d1"], s["spend"]) if plan.get("revenue_d1_metric") else s["roas_d1"]
+        s["roas_d1"] = safe_div(s["revenue_d1"], s["spend"])
         s["icr"] = safe_div(s["installs"], s["impressions"])
+        # ROAS D1 == ICR * ARPU_D1 * 1000 / CPM, exactly. Carrying the two other factors
+        # lets the dashboard show which lever actually moved.
+        s["arpu_d1"] = safe_div(s["revenue_d1"], s["installs"])
+        s["cpm"] = safe_div(1000 * s["spend"], s["impressions"])
         if cid in gads_daily.index.get_level_values(0):
             g = gads_daily.loc[cid].reindex(dates)
             s["gads_spend"] = g["gads_spend"].fillna(0.0)
@@ -494,6 +495,8 @@ def main() -> None:
             "revenue_d1": [r(v, 2) for v in sl["revenue_d1"]],
             "roas_d1": [r(v, 5) for v in sl["roas_d1"]],
             "icr": [r(v, 6) for v in sl["icr"]],
+            "arpu_d1": [r(v, 6) for v in sl["arpu_d1"]],
+            "cpm": [r(v, 4) for v in sl["cpm"]],
             "gads_spend": [r(v, 2) for v in sl["gads_spend"]],
             "gads_test_spend": [r(v, 2) for v in sl["gads_test_spend"]],
         }
@@ -518,7 +521,7 @@ def main() -> None:
             "date_from": dates[0],
             "date_to": dates[-1],
             "channel": plan.get("channel_name") or plan.get("channel_id"),
-            "roas_source": plan.get("revenue_d1_metric") or plan.get("roas_metric") or "n/a",
+            "roas_source": roas_label,
             "icr_definition": "installs / impressions",
             "windows": IMPACT_WINDOWS,
             "default_window": DEFAULT_WINDOW,
