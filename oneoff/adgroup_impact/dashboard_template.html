@@ -48,6 +48,11 @@ select:focus,input:focus{outline:none;border-color:var(--cobalt)}
   font-size:13px;text-transform:none;letter-spacing:0;color:var(--text);cursor:pointer}
 .picker-list label:hover{background:#26292d}
 .picker-list .amt{margin-left:auto;color:var(--muted);font-size:12px;font-variant-numeric:tabular-nums}
+.picker-actions{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:2px}
+.picker-actions .btn{padding:6px 10px;font-size:12px}
+.inline-check{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);
+  text-transform:none;letter-spacing:0;cursor:pointer;white-space:nowrap}
+.picker-list mark{background:rgba(109,114,246,0.4);color:var(--text);border-radius:3px;padding:0 1px}
 input[type=checkbox]{accent-color:var(--cobalt);width:14px;height:14px}
 
 .kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(155px,1fr));gap:12px;margin-top:18px}
@@ -110,12 +115,18 @@ td{font-variant-numeric:tabular-nums}
      </div>
       <div class="ctl picker">
         <label>Кампании <span id="campCount" class="dim"></span></label>
-        <input type="search" id="campSearch" placeholder="фильтр по названию…">
+        <input type="search" id="campSearch" placeholder="фильтр по названию, Enter — отметить найденные">
+        <div class="picker-actions">
+          <button class="btn" id="campSelectFound">+ найденные</button>
+          <button class="btn" id="campClearFound">− найденные</button>
+          <button class="btn" id="campOnlyFound">только найденные</button>
+        </div>
         <div class="picker-list" id="campList"></div>
-        <div style="display:flex;gap:6px">
+        <div class="picker-actions">
           <button class="btn" id="campAll">все</button>
-          <button class="btn" id="campNone">снять</button>
+          <button class="btn" id="campNone">снять всё</button>
           <button class="btn" id="campTop">топ-10 по спенду</button>
+          <label class="inline-check"><input type="checkbox" id="campOnlyTests"> только с тестами</label>
         </div>
       </div>
     </div>

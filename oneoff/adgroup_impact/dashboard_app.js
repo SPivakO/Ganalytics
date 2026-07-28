@@ -800,13 +800,29 @@ function escapeHtml(s) {
 }
 function escapeAttr(s) { return escapeHtml(s); }
 
-function buildCampaignList() {
+/** Campaigns currently shown by the search box and the "only with tests" toggle. */
+function visibleCampaigns() {
   const q = document.getElementById("campSearch").value.trim().toLowerCase();
-  const list = appCampaigns().filter(c => !q || c.name.toLowerCase().includes(q));
+  const onlyTests = document.getElementById("campOnlyTests").checked;
+  return appCampaigns().filter(c =>
+    (!q || c.name.toLowerCase().includes(q)) && (!onlyTests || c.n_events > 0));
+}
+
+function highlight(name, q) {
+  const safe = escapeHtml(shortName(name, 34));
+  if (!q) return safe;
+  const i = safe.toLowerCase().indexOf(q.toLowerCase());
+  return i < 0 ? safe
+    : safe.slice(0, i) + "<mark>" + safe.slice(i, i + q.length) + "</mark>" + safe.slice(i + q.length);
+}
+
+function buildCampaignList() {
+  const q = document.getElementById("campSearch").value.trim();
+  const list = visibleCampaigns();
   document.getElementById("campList").innerHTML = list.map(c =>
     '<label><input type="checkbox" data-id="' + c.id + '"' + (state.selected.has(c.id) ? " checked" : "") + ">" +
-    '<span title="' + escapeAttr(c.name) + '">' + escapeHtml(shortName(c.name, 34)) + "</span>" +
-    '<span class="amt">' + fmtMoney(c.spend) + (c.n_events ? " · " + c.n_events + "🚩" : "") + "</span></label>"
+    '<span title="' + escapeAttr(c.name) + '">' + highlight(c.name, q) + "</span>" +
+    '<span class="amt">' + fmtMoney(c.spend) + (c.n_events ? " · " + c.n_events + "\u{1F6A9}" : "") + "</span></label>"
   ).join("") || '<div class="empty" style="padding:14px">Ничего не найдено</div>';
 
   document.getElementById("campList").querySelectorAll("input").forEach(inp => {
@@ -822,7 +838,23 @@ function buildCampaignList() {
 function updateCampCount() {
   const total = appCampaigns().length;
   const sel = appCampaigns().filter(c => state.selected.has(c.id)).length;
-  document.getElementById("campCount").textContent = "(" + sel + " из " + total + ")";
+  const shown = visibleCampaigns().length;
+  const filtered = shown !== total;
+  document.getElementById("campCount").textContent =
+    "(" + sel + " из " + total + (filtered ? ", найдено " + shown : "") + ")";
+  const q = document.getElementById("campSearch").value.trim();
+  const suffix = filtered ? " (" + shown + ")" : "";
+  document.getElementById("campSelectFound").textContent = (q || filtered ? "+ найденные" : "+ все") + suffix;
+  document.getElementById("campClearFound").textContent = (q || filtered ? "− найденные" : "− все") + suffix;
+}
+
+/** Bulk-apply an operation to whatever the search currently matches. */
+function applyToVisible(op) {
+  const vis = visibleCampaigns();
+  if (op === "only") appCampaigns().forEach(c => state.selected.delete(c.id));
+  vis.forEach(c => op === "remove" ? state.selected.delete(c.id) : state.selected.add(c.id));
+  buildCampaignList();
+  renderAll();
 }
 
 function buildFocusSelect() {
@@ -881,7 +913,7 @@ function init() {
     META.date_from + " — " + META.date_to;
 
   const chips = [
-    ["ROAS D1", META.roas_source],
+    ["ROAS D1", META.roas_source + " из Adjust — кумулятивно за день установки + день 1"],
     ["ICR", META.icr_definition],
     ["Кампаний", String(CAMPS.length)],
     ["Запусков тестов", String(EVENTS.length)],
@@ -921,6 +953,13 @@ function init() {
 
   document.getElementById("focusSel").onchange = e => { state.focus = e.target.value; renderMain(); renderMaster(); };
   document.getElementById("campSearch").oninput = buildCampaignList;
+  document.getElementById("campSearch").onkeydown = e => {
+    if (e.key === "Enter") { e.preventDefault(); applyToVisible("add"); }
+  };
+  document.getElementById("campOnlyTests").onchange = buildCampaignList;
+  document.getElementById("campSelectFound").onclick = () => applyToVisible("add");
+  document.getElementById("campClearFound").onclick = () => applyToVisible("remove");
+  document.getElementById("campOnlyFound").onclick = () => applyToVisible("only");
   document.getElementById("campAll").onclick = () => {
     appCampaigns().forEach(c => state.selected.add(c.id));
     buildCampaignList(); renderAll();
