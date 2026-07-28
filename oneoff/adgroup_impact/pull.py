@@ -259,15 +259,27 @@ def load_probe() -> dict:
 def adjust_plan(probe: dict, args: argparse.Namespace) -> dict:
     """Turn probe findings (plus CLI overrides) into a concrete Adjust request shape."""
     rec = probe.get("recommended", {})
+    channel_dim = probe.get("channel_dimension") or "channel"
     channel_id = args.channel_id or rec.get("channel_id")
-    if not channel_id:
+    channel_name = args.channel_name or rec.get("channel_name")
+
+    # This account's channel dimension carries no id column, so filter by the readable
+    # name instead — "<dim>__in" accepts it and returns exactly that channel.
+    if channel_id:
+        channel_filter = {"channel_id__in": f'"{channel_id}"'}
+        channel_label = channel_id
+    elif channel_name:
+        channel_filter = {f"{channel_dim}__in": f'"{channel_name}"'}
+        channel_label = channel_name
+    else:
         raise SystemExit(
-            "No Google channel_id: probe_adjust.py did not identify one. "
-            "Re-run the probe or pass --channel-id explicitly."
+            "probe_adjust.py identified no Google channel. Re-run the probe, or pass "
+            "--channel-name (e.g. --channel-name 'Google Ads') / --channel-id explicitly."
         )
 
     campaign_dim = rec.get("campaign_dimension") or "campaign"
-    dimensions = [campaign_dim]
+    # Keep the channel as a dimension so the pulled rows prove the filter held.
+    dimensions = [channel_dim, campaign_dim]
     for extra in (rec.get("campaign_id_dimension"), rec.get("adgroup_dimension") if args.adgroup_dimension else None):
         if extra and extra not in dimensions:
             dimensions.append(extra)
@@ -285,7 +297,10 @@ def adjust_plan(probe: dict, args: argparse.Namespace) -> dict:
 
     return {
         "channel_id": channel_id,
-        "channel_name": rec.get("channel_name"),
+        "channel_name": channel_name,
+        "channel_dimension": channel_dim,
+        "channel_filter": channel_filter,
+        "channel_label": channel_label,
         "dimensions": dimensions,
         "metrics": metrics,
         "campaign_dimension": campaign_dim,
@@ -320,10 +335,10 @@ def pull_adjust(
                     end_date=chunk_end,
                     dimensions=plan["dimensions"],
                     metrics=plan["metrics"],
-                    channel_id=plan["channel_id"],
                     store_type=config.STORE_TYPE,
                     index="day",
                     cohort_maturity=cohort_maturity,
+                    extra=plan["channel_filter"],
                     timeout=300,
                 )
             except Exception as e:  # noqa: BLE001 - one bad month should not kill the run
@@ -362,6 +377,7 @@ def main() -> None:
     p.add_argument("--end", default=config.DEFAULT_END)
     p.add_argument("--apps", default=",".join(config.APPS), help="comma-separated Adjust app tokens")
     p.add_argument("--channel-id", default=None, help="override the Google channel id from probe_result.json")
+    p.add_argument("--channel-name", default=None, help="filter by channel name instead of id (e.g. 'Google Ads')")
     p.add_argument("--cohort-maturity", default="mature", choices=["mature", "immature"])
     p.add_argument("--adgroup-dimension", action="store_true", help="also request the Adjust ad group dimension")
     p.add_argument("--skip-google", action="store_true")
@@ -391,7 +407,8 @@ def main() -> None:
     if not args.skip_adjust:
         probe = load_probe()
         plan = adjust_plan(probe, args)
-        print(f"\n== adjust ({plan['channel_name']} / {plan['channel_id']}) ==")
+        print(f"\n== adjust (channel: {plan['channel_label']}) ==")
+        print(f"  filter:     {plan['channel_filter']}")
         print(f"  dimensions: {plan['dimensions']}")
         print(f"  metrics:    {plan['metrics']}")
         adjust_df = pull_adjust(
