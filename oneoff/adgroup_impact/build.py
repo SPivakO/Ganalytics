@@ -211,8 +211,12 @@ def prepare_adjust(adjust: pd.DataFrame, plan: dict, use_adjust_roas: bool = Tru
     agg["roas_d1"] = safe_div(agg["revenue_d1"], agg["spend"])
 
     # retention_rate_d1 is a ratio and cannot be summed; retained_users_d1 can.
+    # When neither was pulled the metric stays absent rather than reading as a flat 0%.
     if (agg["retained_d1"] > 0).any():
         agg["retention_d1"] = safe_div(agg["retained_d1"], agg["installs"])
+    elif not (df["retention_rate_d1_raw"] > 0).any():
+        agg["retained_d1"] = np.nan
+        agg["retention_d1"] = np.nan
     else:
         wr = df.assign(_w=df["retention_rate_d1_raw"] * df["installs"]).groupby(group_cols, as_index=False)["_w"].sum()
         agg = agg.merge(wr, on=group_cols, how="left")

@@ -59,6 +59,7 @@ function expand(cid, key) {
   const s = SERIES[cid];
   if (!s) return out;
   const arr = s[key], start = s.start;
+  if (!arr) return out;
   for (let i = 0; i < arr.length; i++) {
     const v = arr[i];
     if (v != null) out[start + i] = v;
@@ -313,10 +314,14 @@ function renderMaster() {
     return hi > lo ? win.map(v => v == null ? null : 100 * (v - lo) / (hi - lo)) : win.map(v => v == null ? null : 50);
   }
 
+  // A metric that was never pulled arrives as zeros, not nulls, and would draw a flat
+  // line along the axis. Require an actual non-zero value somewhere in view.
+  const present = MASTER_SERIES.filter(m => raw[m.key].some((v, i) =>
+    v != null && v > 0 && i >= state.from && i <= state.to));
   const norm = {};
-  MASTER_SERIES.forEach(m => { norm[m.key] = normalise(raw[m.key]); });
+  present.forEach(m => { norm[m.key] = normalise(raw[m.key]); });
   const rawWin = {};
-  MASTER_SERIES.forEach(m => { rawWin[m.key] = raw[m.key].slice(state.from, state.to + 1); });
+  present.forEach(m => { rawWin[m.key] = raw[m.key].slice(state.from, state.to + 1); });
 
   const fmtUnit = (v, m) => v == null ? "—"
     : m.unit === "pct" ? (v * 100).toFixed(m.digits) + "%"
@@ -330,7 +335,11 @@ function renderMaster() {
      : mode === "minmax" ? "Каждая метрика растянута на 0–100 по своему минимуму и максимуму за период — сравнима форма кривой. "
      : "Реальные значения на одной оси: проценты и доллары вперемешку, читается только при выборе одной-двух метрик. ") +
     "Спенд — серая заливка на своей денежной оси. В подсказке всегда настоящие числа. " +
-    "Клик по названию в легенде убирает метрику с графика.";
+    "Клик по названию в легенде убирает метрику с графика." +
+    (present.length < MASTER_SERIES.length
+      ? ' <span class="dim">Нет данных: ' +
+        MASTER_SERIES.filter(m => !present.includes(m)).map(m => m.name).join(", ") + ".</span>"
+      : "");
 
   chart("chartMaster").setOption({
     backgroundColor: "transparent", animation: false,
@@ -343,7 +352,7 @@ function renderMaster() {
         const i = params.length ? params[0].dataIndex : 0;
         let html = "<b>" + dates[i] + "</b>";
         html += "<br>" + '<span style="color:' + C.text + '">Спенд</span>: <b>' + fmtMoney(spend[state.from + i]) + "</b>";
-        for (const m of MASTER_SERIES) {
+        for (const m of present) {
           const v = rawWin[m.key][i];
           if (v == null) continue;
           html += '<br><span style="color:' + m.color + '">●</span> ' + m.name + ": <b>" + fmtUnit(v, m) + "</b>";
@@ -372,7 +381,7 @@ function renderMaster() {
         markLine: { silent: true, symbol: "none", label: { show: false },
           lineStyle: { color: "rgba(240,97,111,0.32)", width: 1 },
           data: evDates.length <= 40 ? markLineData(evDates) : [] } },
-    ].concat(MASTER_SERIES.map(m => ({
+    ].concat(present.map(m => ({
       name: m.name, type: "line", yAxisIndex: 1, showSymbol: false, smooth: true,
       data: norm[m.key], lineStyle: { color: m.color, width: m.width },
       itemStyle: { color: m.color }, connectNulls: false, z: 3,
