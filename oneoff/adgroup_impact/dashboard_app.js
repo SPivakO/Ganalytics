@@ -193,6 +193,19 @@ function markLineData(dates) {
   return dates.map(d => ({ xAxis: d }));
 }
 
+/** 31 December of each year in view — a labelled anchor for reading a multi-year axis. */
+function yearBoundaryLines(datesInView) {
+  return datesInView.filter(d => d.slice(5) === "12-31").map(d => ({
+    xAxis: d,
+    lineStyle: { color: "rgba(255,255,255,0.42)", type: "dashed", width: 1.2 },
+    label: {
+      show: true, formatter: "31.12." + d.slice(2, 4), position: "insideEndTop",
+      color: "rgba(255,255,255,0.75)", fontSize: 10, backgroundColor: "rgba(20,21,23,0.85)",
+      padding: [2, 4], borderRadius: 3,
+    },
+  }));
+}
+
 function renderMain() {
   const cids = state.focus === "__all__" ? activeCampaigns().map(c => c.id) : [state.focus];
   const acc = sumArrays(cids);
@@ -380,7 +393,7 @@ function renderMaster() {
         areaStyle: { color: "rgba(109,114,246,0.16)" }, z: 1,
         markLine: { silent: true, symbol: "none", label: { show: false },
           lineStyle: { color: "rgba(240,97,111,0.32)", width: 1 },
-          data: evDates.length <= 40 ? markLineData(evDates) : [] } },
+          data: (evDates.length <= 40 ? markLineData(evDates) : []).concat(yearBoundaryLines(dates)) } },
     ].concat(present.map(m => ({
       name: m.name, type: "line", yAxisIndex: 1, showSymbol: false, smooth: true,
       data: norm[m.key], lineStyle: { color: m.color, width: m.width },
