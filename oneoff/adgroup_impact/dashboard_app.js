@@ -97,11 +97,19 @@ function sumArrays(cids) {
 /** Trailing-window ratio: sum(num)/sum(den) — far steadier than averaging daily ratios. */
 function ratioRolling(num, den, w) {
   const out = new Array(N).fill(null);
+  const dens = new Array(N).fill(0);
   let sn = 0, sd = 0;
   for (let i = 0; i < N; i++) {
     sn += num[i]; sd += den[i];
     if (i >= w) { sn -= num[i - w]; sd -= den[i - w]; }
-    if (i >= w - 1 && sd > 0) out[i] = sn / sd;
+    if (i >= w - 1) { dens[i] = sd; if (sd > 0) out[i] = sn / sd; }
+  }
+  // As a campaign winds down, the window holds cents of spend against revenue that
+  // landed days earlier, and the ratio explodes. Those points describe nothing.
+  const positive = dens.filter(v => v > 0).sort((a, b) => a - b);
+  if (positive.length) {
+    const floor = positive[Math.floor(positive.length / 2)] * 0.05;
+    for (let i = 0; i < N; i++) if (dens[i] < floor) out[i] = null;
   }
   return out;
 }
@@ -237,9 +245,11 @@ function renderMain() {
         itemStyle: { color: "rgba(109,114,246,0.42)" }, barMaxWidth: 14,
         markLine: {
           silent: true, symbol: "none",
-          lineStyle: { color: "rgba(240,97,111,0.45)", type: "solid", width: 1 },
+          lineStyle: { color: "rgba(240,97,111,0.38)", type: "solid", width: 1 },
           label: { show: false },
-          data: markLineData(evDates),
+          // Past a few dozen launches the verticals become a picket fence that hides
+          // the very lines they annotate. The triangles below still mark every day.
+          data: evDates.length <= 40 ? markLineData(evDates) : [],
         },
       },
       { name: "ROAS D1", type: "line", yAxisIndex: 1, smooth: true, showSymbol: false,
@@ -372,24 +382,35 @@ function computeImpact() {
       share_before: before.share, share_after: after.share,
     });
   }
+
+  // A window holding a few dollars turns ROAS into noise — one straggling install can
+  // read as hundreds of points. Flag those instead of letting them set the scale.
+  const spends = rows.flatMap(r => [r.spend_before, r.spend_after]).filter(v => v > 0).sort((a, b) => a - b);
+  const floor = spends.length ? spends[Math.floor(spends.length / 2)] * 0.05 : 0;
+  for (const r of rows) {
+    r.thin = !(r.spend_before >= floor && r.spend_after >= floor);
+  }
   return rows;
 }
 
 function renderImpact(rows) {
-  const withRoas = rows.filter(r => r.roas_delta != null);
+  const withRoas = rows.filter(r => r.roas_delta != null && !r.thin);
+  const thin = rows.filter(r => r.thin).length;
   const sorted = withRoas.slice().sort((a, b) => b.roas_delta - a.roas_delta);
   const top = sorted.slice(0, 20).concat(sorted.slice(-20)).filter((v, i, arr) => arr.indexOf(v) === i);
   top.sort((a, b) => b.roas_delta - a.roas_delta);
 
   const pos = withRoas.filter(r => r.roas_delta > 0).length;
   const med = withRoas.length ? median(withRoas.map(r => r.roas_delta)) : null;
-  const medIcr = rows.filter(r => r.icr_delta != null).length ? median(rows.filter(r => r.icr_delta != null).map(r => r.icr_delta)) : null;
+  const icrVals = withRoas.filter(r => r.icr_delta != null).map(r => r.icr_delta);
+  const medIcr = icrVals.length ? median(icrVals) : null;
   document.getElementById("impactSummary").innerHTML =
     withRoas.length
-      ? "Запусков в выборке: <b>" + rows.length + "</b> · с базой для сравнения: <b>" + withRoas.length +
+      ? "Запусков в выборке: <b>" + rows.length + "</b> · пригодных для сравнения: <b>" + withRoas.length +
         "</b> · ROAS D1 вырос в <b>" + pos + "</b> из " + withRoas.length + " (" + (100 * pos / withRoas.length).toFixed(0) +
         "%) · медиана Δ ROAS D1 <b>" + fmtPP(med) + "</b> · медиана Δ ICR <b>" + fmtPP(medIcr) + "</b>" +
-        " · окно ±" + state.window + "д"
+        " · окно ±" + state.window + "д" +
+        (thin ? ' · <span class="dim">' + thin + " с ничтожным спендом в окне исключены из статистики</span>" : "")
       : "Ни одного запуска с достаточной историей в выбранном периоде.";
 
   chart("chartImpact").setOption({
