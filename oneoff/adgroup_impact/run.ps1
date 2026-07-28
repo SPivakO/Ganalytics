@@ -16,6 +16,10 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+# PowerShell 7.3+ turns a non-zero exit from a native command into a terminating
+# error. We check $LASTEXITCODE ourselves and want our own messages, so opt out —
+# otherwise probing for an absent Python version aborts the whole script.
+$PSNativeCommandUseErrorActionPreference = $false
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
@@ -46,17 +50,33 @@ $candidates = @(
   @{ Exe = "python3"; Args = @()        }
 )
 $check = 'import sys; sys.exit(0 if (3,10) <= sys.version_info < (3,14) else 1)'
+
+# Must never throw: "py -3.12" on a machine without 3.12 exits non-zero and writes
+# to stderr, and that is a normal miss, not a failure.
+function Test-PythonCandidate($c) {
+  try {
+    & $c.Exe @($c.Args + @("-c", $check)) *>$null
+    return ($LASTEXITCODE -eq 0)
+  } catch {
+    return $false
+  }
+}
+
 $py = $null
 foreach ($c in $candidates) {
   if (-not (Get-Command $c.Exe -ErrorAction SilentlyContinue)) { continue }
-  & $c.Exe @($c.Args + @("-c", $check)) 2>$null
-  if ($LASTEXITCODE -eq 0) { $py = $c; break }
+  if (Test-PythonCandidate $c) { $py = $c; break }
 }
 if (-not $py) {
   Fail @"
-Не нашёл Python 3.10-3.13.
-Поставь с https://www.python.org/downloads/ (галочка "Add python.exe to PATH")
-и запусти скрипт снова.
+Не нашёл подходящий Python (нужен 3.10-3.13).
+
+Если установлен лаунчер py, самое быстрое:
+    py install 3.12
+
+Иначе поставь с https://www.python.org/downloads/
+и обязательно отметь галочку "Add python.exe to PATH".
+Потом запусти скрипт снова.
 "@
 }
 $pyVersion = (& $py.Exe @($py.Args + @("-V")) 2>&1) -join " "
