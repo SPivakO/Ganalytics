@@ -749,12 +749,20 @@ async function applyReplace(){
   finally{ hideLoading(); }
 }
 
+function skippedNote(skipped){
+  if(!skipped || !skipped.length) return '';
+  return `<div class="skipped-note">⚠ Skipped ${skipped.length} unusable video(s): ` +
+    skipped.map(s=>escapeHtml(s.label)).join(', ') + ' — deleted or unavailable on YouTube</div>';
+}
+
 function renderEditResults(data){
   editResults.classList.remove('hidden');
   const logsHtml = data.logs ? `<div class="upload-logs">${data.logs.map(l=>`<div class="log-line">${escapeHtml(l)}</div>`).join('')}</div>` : '';
   if(data.success){
-    editLog.innerHTML = `<div class="upload-log-item success">
-      <div class="log-header">✓ Updated — removed ${data.removed}, added ${data.added}, total now ${data.total_after}</div>
+    const warn = data.skipped && data.skipped.length;
+    editLog.innerHTML = `<div class="upload-log-item ${warn ? 'warning' : 'success'}">
+      <div class="log-header">${warn ? '⚠' : '✓'} Updated — removed ${data.removed}, added ${data.added}, total now ${data.total_after}</div>
+      ${skippedNote(data.skipped)}
       ${logsHtml}
     </div>`;
   } else {
@@ -1082,13 +1090,16 @@ function renderMigrateResults(results){
     const gname = `${g.campaign_name ? escapeHtml(g.campaign_name) + ' / ' : ''}${escapeHtml(g.ad_group_name || ('#' + (g.ad_group_id || '?')))}`;
     const logsHtml = r.logs ? `<div class="upload-logs">${r.logs.map(l=>`<div class="log-line">${escapeHtml(l)}</div>`).join('')}</div>` : '';
     if(r.success){
-      return `<div class="upload-log-item success">
-        <div class="log-header">✓ ${gname} — added ${r.added}, removed ${r.removed}, now ${r.total_after} videos</div>
+      const warn = r.skipped && r.skipped.length;
+      return `<div class="upload-log-item ${warn ? 'warning' : 'success'}">
+        <div class="log-header">${warn ? '⚠' : '✓'} ${gname} — added ${r.added}, removed ${r.removed}, now ${r.total_after} videos</div>
+        ${skippedNote(r.skipped)}
         ${logsHtml}
       </div>`;
     }
     return `<div class="upload-log-item error">
       <div class="log-header">✗ ${gname} — ${escapeHtml(r.error || 'Failed')}</div>
+      ${skippedNote(r.skipped)}
       ${logsHtml}
     </div>`;
   }).join('');

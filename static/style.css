@@ -476,7 +476,9 @@ tbody tr:hover { background: var(--hover); }
 
 .upload-log-item { padding: 13px 16px; border-radius: var(--r-md); margin-bottom: 10px; font-size: 14px; }
 .upload-log-item.success { background: rgba(43,201,160,0.10); border: 1px solid rgba(43,201,160,0.45); color: var(--teal); }
+.upload-log-item.warning { background: rgba(240,161,61,0.10); border: 1px solid rgba(240,161,61,0.45); color: var(--amber); }
 .upload-log-item.error { background: rgba(240,97,111,0.10); border: 1px solid rgba(240,97,111,0.45); color: var(--danger); }
+.skipped-note { margin: 6px 0 2px; font-size: 13px; opacity: .95; }
 .upload-log-item .campaign-name { color: inherit; opacity: .8; }
 .upload-log-item .log-header { margin-bottom: 8px; }
 .upload-logs {

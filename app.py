@@ -1235,6 +1235,67 @@ def resolve_video_assets(client, customer_id, video_ids):
     return resources, logs
 
 
+def describe_video_assets(client, customer_id, resources):
+    """Human-readable labels for asset resource names: 'Title (videoId)'."""
+    labels = {}
+    asset_ids = []
+    for r in resources:
+        tail = str(r).rsplit('/', 1)[-1]
+        if tail.isdigit():
+            asset_ids.append(tail)
+    if not asset_ids:
+        return labels
+    try:
+        ga_service = client.get_service("GoogleAdsService")
+        query = f"""
+            SELECT asset.resource_name,
+                   asset.name,
+                   asset.youtube_video_asset.youtube_video_id,
+                   asset.youtube_video_asset.youtube_video_title
+            FROM asset
+            WHERE asset.id IN ({",".join(asset_ids)})
+        """
+        for row in ga_service.search(customer_id=customer_id, query=query):
+            yt = row.asset.youtube_video_asset
+            title = yt.youtube_video_title or row.asset.name or ""
+            vid = yt.youtube_video_id or ""
+            labels[row.asset.resource_name] = f"{title} ({vid})".strip() if (title or vid) else row.asset.resource_name
+    except GoogleAdsException:
+        pass
+    return labels
+
+
+def unusable_video_error(ex):
+    """Return (index, reason) for a video Google rejected as unusable, else (None, None).
+
+    Google validates every linked video on update and fails the whole operation,
+    pointing at app_ad.youtube_videos[index]. Only YOUTUBE_VIDEO_* asset-link
+    errors are treated as "this one video can't be used" — anything else is a
+    real failure the caller must see.
+    """
+    for error in ex.failure.errors:
+        try:
+            which = error.error_code._pb.WhichOneof("error_code")
+        except Exception:
+            which = None
+        if not which:
+            continue
+        code = getattr(error.error_code, which, None)
+        code_name = getattr(code, "name", str(code))
+        if not code_name.startswith("YOUTUBE_VIDEO"):
+            continue
+        for el in error.location.field_path_elements:
+            if el.field_name != "youtube_videos":
+                continue
+            try:
+                has_index = "index" in el
+            except TypeError:
+                has_index = True
+            if has_index:
+                return el.index, code_name
+    return None, None
+
+
 @app.get("/api/all_campaigns")
 async def get_all_campaigns(account_ids: str, show_all: bool = False, user: dict[str, Any] = Depends(get_current_user)):
     """Get campaigns for selected accounts (upload/edit/migrate sections).
@@ -1703,34 +1764,56 @@ async def replace_creatives(request: ReplaceCreativesRequest, user: dict[str, An
         raise HTTPException(status_code=400, detail=f"Result would have {len(final)} videos — App Ad limit is 20")
 
     # 5. Update the ad via AdService with an isolated update_mask.
+    #    A video deleted on YouTube keeps its Google Ads asset (and its metrics),
+    #    so it looks fine in the table but makes the whole mutate fail. Google
+    #    names the offending position, so drop it and retry instead of failing.
     ad_service = client.get_service("AdService")
-    ad_operation = client.get_type("AdOperation")
-    ad = ad_operation.update
-    ad.resource_name = request.ad_resource_name
-    for r in final:
-        video_asset = client.get_type("AdVideoAsset")
-        video_asset.asset = r
-        ad.app_ad.youtube_videos.append(video_asset)
-    client.copy_from(ad_operation.update_mask, protobuf_helpers.field_mask(None, ad._pb))
+    added_set = set(added)
+    skipped = []
 
-    try:
-        ad_service.mutate_ads(customer_id=customer_id, operations=[ad_operation])
-        logs.append(f"Updated ad — total videos now: {len(final)}")
-    except GoogleAdsException as ex:
-        error_msg = "; ".join(e.message for e in ex.failure.errors)
-        logs.append(f"Update failed: {error_msg}")
-        return {
-            "success": False,
-            "error": error_msg,
-            "logs": logs,
-        }
+    for _ in range(len(final) + 1):
+        ad_operation = client.get_type("AdOperation")
+        ad = ad_operation.update
+        ad.resource_name = request.ad_resource_name
+        for r in final:
+            video_asset = client.get_type("AdVideoAsset")
+            video_asset.asset = r
+            ad.app_ad.youtube_videos.append(video_asset)
+        client.copy_from(ad_operation.update_mask, protobuf_helpers.field_mask(None, ad._pb))
+
+        try:
+            ad_service.mutate_ads(customer_id=customer_id, operations=[ad_operation])
+            logs.append(f"Updated ad — total videos now: {len(final)}")
+            break
+        except GoogleAdsException as ex:
+            index, reason = unusable_video_error(ex)
+            if index is None or index >= len(final):
+                error_msg = "; ".join(e.message for e in ex.failure.errors)
+                logs.append(f"Update failed: {error_msg}")
+                return {"success": False, "error": error_msg, "logs": logs, "skipped": skipped}
+
+            bad = final.pop(index)
+            label = describe_video_assets(client, customer_id, [bad]).get(bad, bad)
+            origin = "new" if bad in added_set else "already in the ad"
+            skipped.append({"asset_resource": bad, "label": label, "reason": reason, "origin": origin})
+            logs.append(f"Skipped {label} [{origin}] — {reason}")
+
+            if not final:
+                error_msg = "All selected videos are unusable on YouTube — nothing to apply"
+                logs.append(error_msg)
+                return {"success": False, "error": error_msg, "logs": logs, "skipped": skipped}
+    else:
+        error_msg = "Gave up after repeatedly hitting unusable videos"
+        logs.append(error_msg)
+        return {"success": False, "error": error_msg, "logs": logs, "skipped": skipped}
 
     return {
         "success": True,
         "ad_resource_name": request.ad_resource_name,
         "removed": removed_count,
-        "added": len(added),
+        "added": len([r for r in final if r in added_set]),
         "total_after": len(final),
+        "skipped": skipped,
         "logs": logs,
     }
 
