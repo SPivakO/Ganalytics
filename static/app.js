@@ -842,9 +842,12 @@ function updateBulkPreview(){
   }
   const last = chunks[chunks.length - 1].length;
   const names = chunks.map((_, i) => `${prefix}_${String(i+1).padStart(2,'0')}`);
+  const split = chunks.length === 1
+    ? `× ${last} videos`
+    : `× ${bulkChunkSize()} videos${last !== bulkChunkSize() ? ` (last one: ${last})` : ''}`;
   bulkPreview.innerHTML =
     `<strong>${urls.length}</strong> links → <strong>${chunks.length}</strong> ad group${chunks.length>1?'s':''} ` +
-    `× ${bulkChunkSize()} videos${last !== bulkChunkSize() ? ` (last one: ${last})` : ''} ` +
+    `${split} ` +
     `in <strong>${escapeHtml(_bulkSource.campaign_name)}</strong>, all PAUSED` +
     `<div class="bulk-names">${names.slice(0,4).map(escapeHtml).join(', ')}${names.length>4?`, … ${escapeHtml(names[names.length-1])}`:''}</div>`;
   bulkCreateBtn.disabled = false;
