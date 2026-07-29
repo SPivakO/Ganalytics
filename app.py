@@ -1454,59 +1454,84 @@ def create_adgroup_with_videos(client, customer_id, campaign_id, adgroup_name, v
             "logs": logs
         }
     
-    # 3. Create App Ad with text and videos
+    # 3. Create App Ad with text and videos. Videos deleted on YouTube keep their
+    #    assets, so drop the ones Google rejects and retry rather than losing the ad.
     logs.append("Creating App Ad...")
-    
-    ad_group_ad_operation = client.get_type("AdGroupAdOperation")
-    ad_group_ad = ad_group_ad_operation.create
-    ad_group_ad.ad_group = ad_group_resource
-    ad_group_ad.status = client.enums.AdGroupAdStatusEnum.ENABLED
-    
-    ad = ad_group_ad.ad
-    app_ad = ad.app_ad
-    
-    for headline_text in headlines[:5]:
-        headline_info = client.get_type("AdTextAsset")
-        headline_info.text = headline_text
-        app_ad.headlines.append(headline_info)
-    
-    for desc_text in descriptions[:5]:
-        desc_info = client.get_type("AdTextAsset")
-        desc_info.text = desc_text
-        app_ad.descriptions.append(desc_info)
-    
-    for v_asset in created_video_assets:
-        video_info = client.get_type("AdVideoAsset")
-        video_info.asset = v_asset
-        app_ad.youtube_videos.append(video_info)
-    
-    logs.append(f"App Ad payload: {len(headlines[:5])} headlines, {len(descriptions[:5])} descriptions, {len(created_video_assets)} videos")
-    
-    try:
-        ad_response = ad_group_ad_service.mutate_ad_group_ads(
-            customer_id=customer_id,
-            operations=[ad_group_ad_operation]
-        )
-        logs.append(f"Created App Ad: {ad_response.results[0].resource_name}")
-    except GoogleAdsException as ex:
-        error_details = []
-        for error in ex.failure.errors:
-            error_details.append(f"{error.message}")
-            if hasattr(error, 'details') and error.details:
-                error_details.append(f"  Details: {error.details}")
-        error_msg = "; ".join(error_details)
-        logs.append(f"App Ad error: {error_msg}")
-        return {
+    skipped = []
+
+    for _ in range(len(created_video_assets) + 1):
+        ad_group_ad_operation = client.get_type("AdGroupAdOperation")
+        ad_group_ad = ad_group_ad_operation.create
+        ad_group_ad.ad_group = ad_group_resource
+        ad_group_ad.status = client.enums.AdGroupAdStatusEnum.ENABLED
+
+        ad = ad_group_ad.ad
+        app_ad = ad.app_ad
+
+        for headline_text in headlines[:5]:
+            headline_info = client.get_type("AdTextAsset")
+            headline_info.text = headline_text
+            app_ad.headlines.append(headline_info)
+
+        for desc_text in descriptions[:5]:
+            desc_info = client.get_type("AdTextAsset")
+            desc_info.text = desc_text
+            app_ad.descriptions.append(desc_info)
+
+        for v_asset in created_video_assets:
+            video_info = client.get_type("AdVideoAsset")
+            video_info.asset = v_asset
+            app_ad.youtube_videos.append(video_info)
+
+        logs.append(f"App Ad payload: {len(headlines[:5])} headlines, {len(descriptions[:5])} descriptions, {len(created_video_assets)} videos")
+
+        try:
+            ad_response = ad_group_ad_service.mutate_ad_group_ads(
+                customer_id=customer_id,
+                operations=[ad_group_ad_operation]
+            )
+            logs.append(f"Created App Ad: {ad_response.results[0].resource_name}")
+            break
+        except GoogleAdsException as ex:
+            index, reason = unusable_video_error(ex)
+            if index is not None and index < len(created_video_assets):
+                bad = created_video_assets.pop(index)
+                label = describe_video_assets(client, customer_id, [bad]).get(bad, bad)
+                skipped.append({"asset_resource": bad, "label": label, "reason": reason, "origin": "new"})
+                logs.append(f"Skipped {label} — {reason}")
+                if created_video_assets:
+                    continue
+                error_msg = "All videos are unusable on YouTube"
+                logs.append(error_msg)
+                return {
+                    "account_id": customer_id,
+                    "campaign_id": campaign_id,
+                    "adgroup_resource": ad_group_resource,
+                    "success": False,
+                    "error": f"Ad group created but App Ad failed: {error_msg}",
+                    "skipped": skipped,
+                    "logs": logs
+                }
+
+            error_details = []
+            for error in ex.failure.errors:
+                error_details.append(f"{error.message}")
+                if hasattr(error, 'details') and error.details:
+                    error_details.append(f"  Details: {error.details}")
+            error_msg = "; ".join(error_details)
+            logs.append(f"App Ad error: {error_msg}")
+            return {
             "account_id": customer_id,
             "campaign_id": campaign_id,
             "adgroup_resource": ad_group_resource,
             "success": False,
             "error": f"Ad group created but App Ad failed: {error_msg}",
+            "skipped": skipped,
             "logs": logs
         }
-    
+
     logs.append("Completed!")
-    
+
     return {
         "account_id": customer_id,
         "campaign_id": campaign_id,
@@ -1514,6 +1539,7 @@ def create_adgroup_with_videos(client, customer_id, campaign_id, adgroup_name, v
         "adgroup_resource": ad_group_resource,
         "videos_count": len(video_ids),
         "assets_created": len(created_video_assets),
+        "skipped": skipped,
         "success": True,
         "logs": logs
     }
@@ -1816,6 +1842,96 @@ async def replace_creatives(request: ReplaceCreativesRequest, user: dict[str, An
         "skipped": skipped,
         "logs": logs,
     }
+
+
+# ==================== BULK CREATE (clone an ad group N times) ====================
+
+class CloneAdgroupRequest(BaseModel):
+    account_id: str
+    campaign_id: str
+    adgroup_name: str
+    youtube_urls: List[str]
+    headlines: List[str]
+    descriptions: List[str]
+
+
+@app.get("/api/adgroup_texts")
+async def get_adgroup_texts(account_id: str, ad_group_id: str, user: dict[str, Any] = Depends(get_current_user)):
+    """Headlines/descriptions and campaign of an ad group's App Ad — the template
+    used when cloning it into several new ad groups."""
+    client = get_client()
+    ga_service = client.get_service("GoogleAdsService")
+    query = f"""
+        SELECT ad_group.id, ad_group.name,
+               campaign.id, campaign.name,
+               ad_group_ad.ad.app_ad.headlines,
+               ad_group_ad.ad.app_ad.descriptions
+        FROM ad_group_ad
+        WHERE ad_group.id = {ad_group_id}
+          AND ad_group_ad.status != 'REMOVED'
+    """
+    try:
+        for row in ga_service.search(customer_id=account_id, query=query):
+            app_ad = row.ad_group_ad.ad.app_ad
+            headlines = [h.text for h in app_ad.headlines if h.text]
+            descriptions = [d.text for d in app_ad.descriptions if d.text]
+            if not headlines and not descriptions:
+                continue
+            return {
+                "account_id": account_id,
+                "ad_group_id": str(row.ad_group.id),
+                "ad_group_name": row.ad_group.name,
+                "campaign_id": str(row.campaign.id),
+                "campaign_name": row.campaign.name,
+                "headlines": headlines,
+                "descriptions": descriptions,
+            }
+    except GoogleAdsException as ex:
+        raise HTTPException(status_code=400, detail=ex.failure.errors[0].message)
+
+    raise HTTPException(status_code=404, detail="No App Ad with texts found in this ad group")
+
+
+@app.post("/api/clone_adgroup")
+async def clone_adgroup(request: CloneAdgroupRequest, user: dict[str, Any] = Depends(get_current_user)):
+    """Create one PAUSED ad group with the given videos and copied texts.
+
+    The caller sends one chunk at a time (e.g. 20 videos per ad group), so a
+    300-video batch stays responsive and reports progress per ad group.
+    """
+    client = get_client()
+
+    video_ids = []
+    for url in request.youtube_urls:
+        vid = parse_youtube_url(url)
+        if vid:
+            video_ids.append(vid)
+    if not video_ids:
+        raise HTTPException(status_code=400, detail="No valid YouTube video IDs in this chunk")
+
+    headlines = [h.strip()[:30] for h in request.headlines if h.strip()][:5]
+    descriptions = [d.strip()[:90] for d in request.descriptions if d.strip()][:5]
+    if not headlines or not descriptions:
+        raise HTTPException(status_code=400, detail="Source ad group has no headlines/descriptions to copy")
+
+    try:
+        return create_adgroup_with_videos(
+            client=client,
+            customer_id=request.account_id,
+            campaign_id=request.campaign_id,
+            adgroup_name=request.adgroup_name,
+            video_ids=video_ids,
+            headlines=headlines,
+            descriptions=descriptions,
+        )
+    except Exception as e:
+        return {
+            "account_id": request.account_id,
+            "campaign_id": request.campaign_id,
+            "adgroup_name": request.adgroup_name,
+            "success": False,
+            "error": str(e),
+        }
 
 
 if __name__ == "__main__":

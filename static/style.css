@@ -491,6 +491,40 @@ tbody tr:hover { background: var(--hover); }
 .edit-hint { margin-top: 16px; color: var(--text-2); font-size: 13px; line-height: 1.6; }
 .edit-legend { display: flex; gap: 8px; align-items: center; }
 
+/* ---------------- Bulk Create ---------------- */
+.bulk-source {
+    margin-top: 20px;
+    padding: 16px;
+    background: var(--surface-2);
+    border: 1px solid var(--hairline);
+    border-radius: var(--r-md);
+}
+.bulk-source.hidden { display: none; }
+.bulk-source-title { font-size: 13px; color: var(--text-2); margin-bottom: 12px; }
+.bulk-source-cols { display: flex; gap: 24px; flex-wrap: wrap; }
+.bulk-source-cols > div { flex: 1; min-width: 220px; }
+.bulk-source-cols h4 {
+    font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.6px;
+    color: var(--text-3); margin-bottom: 6px;
+}
+.bulk-source-cols div > div { font-size: 13px; color: var(--text); padding: 2px 0; }
+
+.bulk-preview {
+    margin-top: 18px; padding: 14px 16px;
+    background: var(--surface-2); border: 1px solid var(--hairline);
+    border-radius: var(--r-md); font-size: 14px; color: var(--text-2);
+}
+.bulk-names { margin-top: 6px; font-size: 12.5px; color: var(--text-3); font-family: 'SFMono-Regular','Consolas',monospace; }
+
+.bulk-progress { margin-bottom: 16px; }
+.bulk-progress.hidden { display: none; }
+.bulk-progress-bar {
+    height: 6px; background: var(--surface-2); border-radius: var(--r-pill);
+    overflow: hidden; border: 1px solid var(--hairline);
+}
+.bulk-progress-bar span { display: block; height: 100%; width: 0; background: #ffffff; transition: width .25s; }
+.bulk-progress-text { margin-top: 6px; font-size: 12.5px; color: var(--text-3); font-variant-numeric: tabular-nums; }
+
 /* ---------------- Migrate 2nd Touch ---------------- */
 .migrate-grid { display: flex; gap: 18px; align-items: flex-start; }
 .migrate-pane { flex: 1; min-width: 0; }

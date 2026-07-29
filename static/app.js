@@ -25,7 +25,9 @@ let pickerFlags = {
   srcCampaigns: false,
   srcAdgroups: false,
   dstCampaigns: false,
-  dstAdgroups: false
+  dstAdgroups: false,
+  bulkCampaigns: false,
+  bulkAdgroups: false
 };
 
 // Reports DOM
@@ -81,6 +83,20 @@ const editAddUrls = document.getElementById('edit-add-urls');
 const editApplyBtn = document.getElementById('edit-apply-btn');
 const editResults = document.getElementById('edit-results');
 const editLog = document.getElementById('edit-log');
+
+// Bulk Create DOM
+const bulkAccountsContainer = document.getElementById('bulk-accounts-container');
+const bulkCampaignsContainer = document.getElementById('bulk-campaigns-container');
+const bulkAdgroupsContainer = document.getElementById('bulk-adgroups-container');
+const bulkSourceInfo = document.getElementById('bulk-source-info');
+const bulkUrls = document.getElementById('bulk-urls');
+const bulkPrefix = document.getElementById('bulk-prefix');
+const bulkChunk = document.getElementById('bulk-chunk');
+const bulkCreateBtn = document.getElementById('bulk-create-btn');
+const bulkPreview = document.getElementById('bulk-preview');
+const bulkResults = document.getElementById('bulk-results');
+const bulkProgress = document.getElementById('bulk-progress');
+const bulkLog = document.getElementById('bulk-log');
 
 // Migrate 2nd Touch DOM (per-pane containers keyed by 'src'/'dst')
 const migratePanes = {
@@ -190,6 +206,10 @@ function setupEventListeners(){
   if (dashLoadBtn) dashLoadBtn.addEventListener('click', loadDashboard);
   if (editApplyBtn) editApplyBtn.addEventListener('click', applyReplace);
   if (migrateApplyBtn) migrateApplyBtn.addEventListener('click', applyMigration);
+  if (bulkCreateBtn) bulkCreateBtn.addEventListener('click', runBulkCreate);
+  if (bulkUrls) bulkUrls.addEventListener('input', updateBulkPreview);
+  if (bulkPrefix) bulkPrefix.addEventListener('input', updateBulkPreview);
+  if (bulkChunk) bulkChunk.addEventListener('input', updateBulkPreview);
 }
 
 // ==================== PICKER COMPONENT ====================
@@ -333,6 +353,7 @@ async function loadAccounts(){
     createPicker(editAccountsContainer, { items, onChange: () => onEditAccountChange() });
     createPicker(migratePanes.src.accounts, { items, onChange: () => onMigrateAccountChange('src') });
     createPicker(migratePanes.dst.accounts, { items, onChange: () => onMigrateAccountChange('dst') });
+    createPicker(bulkAccountsContainer, { items, onChange: () => onBulkAccountChange() });
   }catch(e){showError('Failed to load accounts: '+e.message);}
 }
 
@@ -771,6 +792,193 @@ function renderEditResults(data){
       ${logsHtml}
     </div>`;
   }
+}
+
+// ==================== BULK CREATE TAB ====================
+// Paste N links -> split into chunks -> create one ad group per chunk, each a
+// copy of a source ad group's texts, in that ad group's campaign, PAUSED.
+let _bulkSource = null;   // { account_id, campaign_id, campaign_name, ad_group_name, headlines, descriptions }
+
+function parseBulkUrls(){
+  const seen = new Set();
+  const out = [];
+  bulkUrls.value.split('\n').map(s => s.trim()).filter(Boolean).forEach(u => {
+    if(!seen.has(u)){ seen.add(u); out.push(u); }
+  });
+  return out;
+}
+
+function bulkChunkSize(){
+  const n = parseInt(bulkChunk.value, 10);
+  return Math.max(1, Math.min(20, isNaN(n) ? 20 : n));
+}
+
+function bulkChunks(){
+  const urls = parseBulkUrls();
+  const size = bulkChunkSize();
+  const chunks = [];
+  for(let i = 0; i < urls.length; i += size) chunks.push(urls.slice(i, i + size));
+  return chunks;
+}
+
+function updateBulkPreview(){
+  const urls = parseBulkUrls();
+  const chunks = bulkChunks();
+  const prefix = bulkPrefix.value.trim();
+  if(!_bulkSource){
+    bulkPreview.textContent = 'Pick a source ad group above to copy its texts.';
+    bulkCreateBtn.disabled = true;
+    return;
+  }
+  if(!urls.length){
+    bulkPreview.textContent = 'Paste YouTube links to see the plan.';
+    bulkCreateBtn.disabled = true;
+    return;
+  }
+  if(!prefix){
+    bulkPreview.textContent = 'Enter an ad group name prefix.';
+    bulkCreateBtn.disabled = true;
+    return;
+  }
+  const last = chunks[chunks.length - 1].length;
+  const names = chunks.map((_, i) => `${prefix}_${String(i+1).padStart(2,'0')}`);
+  bulkPreview.innerHTML =
+    `<strong>${urls.length}</strong> links → <strong>${chunks.length}</strong> ad group${chunks.length>1?'s':''} ` +
+    `× ${bulkChunkSize()} videos${last !== bulkChunkSize() ? ` (last one: ${last})` : ''} ` +
+    `in <strong>${escapeHtml(_bulkSource.campaign_name)}</strong>, all PAUSED` +
+    `<div class="bulk-names">${names.slice(0,4).map(escapeHtml).join(', ')}${names.length>4?`, … ${escapeHtml(names[names.length-1])}`:''}</div>`;
+  bulkCreateBtn.disabled = false;
+}
+
+async function onBulkAccountChange(){
+  const ids = pickerSelected(bulkAccountsContainer);
+  setPickerPlaceholder(bulkAdgroupsContainer, 'Select campaigns first');
+  _bulkSource = null; bulkSourceInfo.classList.add('hidden'); updateBulkPreview();
+  if(!ids.length){ setPickerPlaceholder(bulkCampaignsContainer, 'Select accounts first'); return; }
+  setPickerLoading(bulkCampaignsContainer, 'Loading campaigns...');
+  try{
+    const resp = await fetch(`/api/all_campaigns?account_ids=${ids.join(',')}&show_all=${pickerFlags.bulkCampaigns}`);
+    const data = await resp.json();
+    if(!resp.ok) throw new Error(data.detail||'Failed to load campaigns');
+    createPicker(bulkCampaignsContainer, {
+      items: data.campaigns.map(c => ({ id: c.id, name: c.name, status: c.status })),
+      showAllToggle: true, showAll: pickerFlags.bulkCampaigns,
+      emptyText: 'No campaigns found',
+      onChange: () => onBulkCampaignChange(),
+      onShowAllChange: (v) => { pickerFlags.bulkCampaigns = v; onBulkAccountChange(); }
+    });
+  }catch(e){ setPickerPlaceholder(bulkCampaignsContainer, `Error: ${e.message}`); }
+}
+
+async function onBulkCampaignChange(){
+  const accountIds = pickerSelected(bulkAccountsContainer);
+  const campaignIds = pickerSelected(bulkCampaignsContainer);
+  _bulkSource = null; bulkSourceInfo.classList.add('hidden'); updateBulkPreview();
+  if(!campaignIds.length){ setPickerPlaceholder(bulkAdgroupsContainer, 'Select campaigns first'); return; }
+  setPickerLoading(bulkAdgroupsContainer, 'Loading ad groups...');
+  try{
+    const resp = await fetch(`/api/adgroups?account_ids=${accountIds.join(',')}&campaign_ids=${campaignIds.join(',')}&show_all=${pickerFlags.bulkAdgroups}`);
+    const data = await resp.json();
+    if(!resp.ok) throw new Error(data.detail||'Failed to load ad groups');
+    createPicker(bulkAdgroupsContainer, {
+      items: data.adgroups.map(g => ({
+        id: `${g.account_id}|${g.ad_group_id}`, name: g.ad_group_name, hint: g.campaign_name, status: g.status
+      })),
+      multi: false,
+      showAllToggle: true, showAll: pickerFlags.bulkAdgroups,
+      emptyText: 'No ad groups found',
+      onChange: (ids) => { if(ids.length) loadBulkSource(ids[0]); },
+      onShowAllChange: (v) => { pickerFlags.bulkAdgroups = v; onBulkCampaignChange(); }
+    });
+  }catch(e){ setPickerPlaceholder(bulkAdgroupsContainer, `Error: ${e.message}`); }
+}
+
+async function loadBulkSource(key){
+  const [accountId, adGroupId] = key.split('|');
+  hideError(); showLoading();
+  try{
+    const resp = await fetch(`/api/adgroup_texts?account_id=${accountId}&ad_group_id=${adGroupId}`);
+    const data = await resp.json();
+    if(!resp.ok) throw new Error(data.detail||'Failed to read source ad group');
+    _bulkSource = { account_id: accountId, ...data };
+    bulkSourceInfo.classList.remove('hidden');
+    bulkSourceInfo.innerHTML =
+      `<div class="bulk-source-title">Copying texts from <strong>${escapeHtml(data.ad_group_name)}</strong> · ${escapeHtml(data.campaign_name)}</div>` +
+      `<div class="bulk-source-cols">
+         <div><h4>Headlines (${data.headlines.length})</h4>${data.headlines.map(h=>`<div>${escapeHtml(h)}</div>`).join('')}</div>
+         <div><h4>Descriptions (${data.descriptions.length})</h4>${data.descriptions.map(d=>`<div>${escapeHtml(d)}</div>`).join('')}</div>
+       </div>`;
+  }catch(e){
+    _bulkSource = null;
+    bulkSourceInfo.classList.add('hidden');
+    showError('Failed to read source ad group: '+e.message);
+  }
+  finally{ hideLoading(); updateBulkPreview(); }
+}
+
+function setBulkProgress(done, total){
+  bulkProgress.classList.remove('hidden');
+  bulkProgress.querySelector('.bulk-progress-bar span').style.width = `${Math.round(done/total*100)}%`;
+  bulkProgress.querySelector('.bulk-progress-text').textContent = `${done} / ${total} ad groups`;
+}
+
+async function runBulkCreate(){
+  if(!_bulkSource) return showError('Pick a source ad group first');
+  const chunks = bulkChunks();
+  const prefix = bulkPrefix.value.trim();
+  if(!chunks.length) return showError('Paste at least one YouTube link');
+  if(!prefix) return showError('Enter an ad group name prefix');
+  if(!confirm(`Create ${chunks.length} PAUSED ad group(s) in "${_bulkSource.campaign_name}"? Total ${parseBulkUrls().length} videos.`)) return;
+
+  hideError();
+  bulkCreateBtn.disabled = true;
+  bulkResults.classList.remove('hidden');
+  bulkLog.innerHTML = '';
+  setBulkProgress(0, chunks.length);
+
+  const results = [];
+  for(let i = 0; i < chunks.length; i++){
+    const name = `${prefix}_${String(i+1).padStart(2,'0')}`;
+    try{
+      const resp = await fetch('/api/clone_adgroup', {
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({
+          account_id: _bulkSource.account_id,
+          campaign_id: _bulkSource.campaign_id,
+          adgroup_name: name,
+          youtube_urls: chunks[i],
+          headlines: _bulkSource.headlines,
+          descriptions: _bulkSource.descriptions
+        })
+      });
+      const data = await resp.json();
+      results.push(resp.ok ? { name, ...data } : { name, success: false, error: data.detail || 'Failed' });
+    }catch(e){
+      results.push({ name, success: false, error: e.message });
+    }
+    setBulkProgress(i+1, chunks.length);
+    renderBulkResults(results);
+  }
+  bulkCreateBtn.disabled = false;
+}
+
+function renderBulkResults(results){
+  bulkLog.innerHTML = results.map(r => {
+    const logsHtml = r.logs ? `<div class="upload-logs">${r.logs.map(l=>`<div class="log-line">${escapeHtml(l)}</div>`).join('')}</div>` : '';
+    if(r.success){
+      const warn = r.skipped && r.skipped.length;
+      return `<div class="upload-log-item ${warn ? 'warning' : 'success'}">
+        <div class="log-header">${warn ? '⚠' : '✓'} ${escapeHtml(r.adgroup_name || r.name)} — ${r.assets_created || 0} videos</div>
+        ${skippedNote(r.skipped)}
+        ${logsHtml}
+      </div>`;
+    }
+    return `<div class="upload-log-item error">
+      <div class="log-header">✗ ${escapeHtml(r.name)} — ${escapeHtml(r.error || 'Failed')}</div>
+      ${skippedNote(r.skipped)}
+      ${logsHtml}
+    </div>`;
+  }).join('');
 }
 
 // ==================== MIGRATE 2ND TOUCH TAB ====================
