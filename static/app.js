@@ -127,6 +127,32 @@ const migrateLog = document.getElementById('migrate-log');
 const loadingOverlay = document.getElementById('loading-overlay');
 const errorMessage = document.getElementById('error-message');
 
+// Metrics: события уходят на свой же origin, наружу их релеит сервер
+const EVENT_ROUTE = '/api/r';
+let activeTab = 'reports';
+
+function currentUrl(){
+  return `${window.location.pathname}${window.location.search}#${activeTab}`;
+}
+
+function trackEvent(name, data){
+  try{
+    const body = JSON.stringify({
+      name,
+      data,
+      hostname: window.location.hostname,
+      language: window.navigator.language,
+      referrer: document.referrer,
+      screen: `${window.screen.width}x${window.screen.height}`,
+      title: document.title.slice(0, 512),
+      url: currentUrl()
+    });
+    // sendBeacon переживает уход со страницы; fetch — запасной путь.
+    if(navigator.sendBeacon && navigator.sendBeacon(EVENT_ROUTE, new Blob([body], {type:'application/json'}))) return;
+    fetch(EVENT_ROUTE, {method:'POST', headers:{'Content-Type':'application/json'}, body, keepalive:true}).catch(()=>{});
+  }catch(e){}
+}
+
 // Initialize
 document.addEventListener('DOMContentLoaded', () => {
   initializeGlobalDates();
@@ -134,6 +160,7 @@ document.addEventListener('DOMContentLoaded', () => {
   loadAccounts();
   setupEventListeners();
   initializeDashboardDefaults();
+  trackEvent('page_visit');
 });
 
 function formatDate(d){
@@ -159,6 +186,7 @@ function initializeGlobalDates(){
       onChange: (dates) => {
         if (dates.length === 2) {
           state.dateRange = { start: formatDate(dates[0]), end: formatDate(dates[1]) };
+          trackEvent('filter_change', {surface:'global', filter:'date_range', value:`${state.dateRange.start}..${state.dateRange.end}`});
           onGlobalDatesChanged();
         }
       }
@@ -188,6 +216,8 @@ function initializeTabs(){
       btn.classList.add('active');
       document.querySelectorAll('.tab-content').forEach(c=>c.classList.remove('active'));
       document.getElementById(`${tabId}-tab`).classList.add('active');
+      activeTab = tabId;
+      trackEvent('page_visit');
     });
   });
 }
@@ -198,7 +228,14 @@ function setupEventListeners(){
       const isTest = e.target.value === 'test';
       reportAdgroupsGroup.classList.toggle('hidden', !isTest);
       if (isTest) loadReportAdgroups();
+      trackEvent('filter_change', {surface:'reports', filter:'adgroup_type', value:e.target.value});
     });
+  });
+  groupByAccountCheckbox.addEventListener('change', e=>{
+    trackEvent('filter_change', {surface:'reports', filter:'split_account', value:e.target.checked});
+  });
+  groupByCampaignCheckbox.addEventListener('change', e=>{
+    trackEvent('filter_change', {surface:'reports', filter:'split_campaign', value:e.target.checked});
   });
   loadBtn.addEventListener('click', loadReport);
   downloadBtn.addEventListener('click', downloadCSV);
@@ -529,6 +566,7 @@ function downloadCSV(){
   const blob=new Blob(['﻿'+csv],{type:'text/csv;charset=utf-8;'});
   const url=URL.createObjectURL(blob);
   const link=document.createElement('a'); link.href=url; link.download=`youtube_assets_${state.dateRange.start}_${state.dateRange.end}.csv`; link.click(); URL.revokeObjectURL(url);
+  trackEvent('report_export', {format:'csv', rows:state.reportData.length});
 }
 
 // ==================== UPLOAD TAB ====================
@@ -628,7 +666,10 @@ function formatNumber(v){return v.toLocaleString('en-US');}
 function escapeHtml(t){const d=document.createElement('div'); d.textContent=t; return d.innerHTML;}
 function showLoading(){loadingOverlay.classList.remove('hidden'); loadBtn.disabled=true; uploadBtn.disabled=true;}
 function hideLoading(){loadingOverlay.classList.add('hidden'); loadBtn.disabled=false; uploadBtn.disabled=false;}
-function showError(m){errorMessage.textContent=m; errorMessage.classList.remove('hidden');}
+function showError(m, kind){
+  errorMessage.textContent=m; errorMessage.classList.remove('hidden');
+  trackEvent('error_shown', {surface:activeTab, kind:kind || (String(m).startsWith('Failed to') ? 'request_failed' : 'validation')});
+}
 function hideError(){errorMessage.classList.add('hidden');}
 
 function creativesDateParams(){
@@ -757,7 +798,8 @@ async function applyReplace(){
       account_id: _editContext.account_id,
       ad_resource_name: _editContext.ad_resource_name,
       remove_asset_resources: removeAssets,
-      add_youtube_urls: addUrls
+      add_youtube_urls: addUrls,
+      surface: 'editgroup'
     })});
     const data=await resp.json();
     if(!resp.ok) throw new Error(data.detail||'Failed to apply changes');
@@ -951,7 +993,8 @@ async function runBulkCreate(){
           adgroup_name: name,
           youtube_urls: chunks[i],
           headlines: _bulkSource.headlines,
-          descriptions: _bulkSource.descriptions
+          descriptions: _bulkSource.descriptions,
+          surface: 'bulk'
         })
       });
       const data = await resp.json();
@@ -1277,7 +1320,8 @@ async function applyMigration(){
           account_id: p.group.account_id,
           ad_resource_name: p.group.ad_resource_name,
           remove_asset_resources: p.removeAssets,
-          add_youtube_urls: addIds
+          add_youtube_urls: addIds,
+          surface: 'migrate'
         })});
         const data = await resp.json();
         if(!resp.ok) results.push({ group: p.group, success: false, error: data.detail || 'Failed', logs: data.logs });
@@ -1326,6 +1370,13 @@ function initializeDashboardDefaults(){
     if (savedApp) dashAppSelect.value = savedApp;
     dashAppSelect.addEventListener('change', () => {
       localStorage.setItem('dash_app_token', dashAppSelect.value);
+      trackEvent('filter_change', {surface:'dashboard', filter:'app', value:dashAppSelect.selectedOptions[0] ? dashAppSelect.selectedOptions[0].textContent.trim() : ''});
+    });
+  }
+
+  if (dashPlatformSelect) {
+    dashPlatformSelect.addEventListener('change', () => {
+      trackEvent('filter_change', {surface:'dashboard', filter:'platform', value:dashPlatformSelect.value});
     });
   }
 

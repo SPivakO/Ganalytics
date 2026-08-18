@@ -1,6 +1,6 @@
 import os
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Request, Depends
+from fastapi import FastAPI, HTTPException, Request, Depends, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, RedirectResponse, JSONResponse
 from starlette.middleware.sessions import SessionMiddleware
@@ -22,6 +22,7 @@ from datetime import datetime, timedelta
 import asyncio
 import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
+import analytics
 
 load_dotenv()
 
@@ -53,6 +54,29 @@ oauth.register(
     server_metadata_url='https://accounts.google.com/.well-known/openid-configuration',
     client_kwargs={'scope': 'openid email profile'}
 )
+
+# URL табов для аналитики: фронт шлёт просмотры страниц в том же виде.
+REPORTS_URL = "/#reports"
+UPLOAD_URL = "/#upload"
+EDIT_URL = "/#editgroup"
+BULK_URL = "/#bulk"
+MIGRATE_URL = "/#migrate"
+DASHBOARD_URL = "/#dashboard"
+AUTH_CALLBACK_URL = "/api/auth/callback/google"
+TAB_URLS = {
+    "reports": REPORTS_URL,
+    "upload": UPLOAD_URL,
+    "editgroup": EDIT_URL,
+    "bulk": BULK_URL,
+    "migrate": MIGRATE_URL,
+    "dashboard": DASHBOARD_URL,
+}
+
+
+def tab_url(surface: Optional[str], default: str) -> str:
+    """Один эндпоинт зовут разные вкладки — фронт подсказывает, какая именно."""
+    return TAB_URLS.get(surface or "", default)
+
 
 def get_current_user(request: Request) -> Any:
     user = request.session.get('user')
@@ -596,17 +620,54 @@ async def login(request: Request):
 
 @app.get("/api/auth/callback/google")
 async def auth_callback(request: Request):
-    token = await oauth.google.authorize_access_token(request)
+    try:
+        token = await oauth.google.authorize_access_token(request)
+    except Exception as e:
+        analytics.track(request, "auth_attempt", url=AUTH_CALLBACK_URL,
+                        data={"status": "error", "reason": type(e).__name__})
+        raise
     user = token.get('userinfo')
     if user:
         request.session['user'] = dict(user)
+        request.session.pop('analytics_identified', None)
+    analytics.track(
+        request, "auth_attempt", url=AUTH_CALLBACK_URL,
+        data={"status": "success"} if user else {"status": "error", "reason": "no_userinfo"},
+        email=(user or {}).get('email'),
+    )
     return RedirectResponse(url='/')
 
 
 @app.get("/api/auth/logout")
 async def logout(request: Request):
     request.session.pop('user', None)
+    request.session.pop('analytics_identified', None)
     return RedirectResponse(url='/')
+
+
+@app.post("/api/r")
+async def relay_event(request: Request):
+    """Приём событий с фронта: наружу в аналитику ходит только сервер.
+
+    Всегда отвечает 202 — аналитика не должна быть видна пользователю как ошибка.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        return Response(status_code=202)
+
+    user = request.session.get('user') or {}
+    email = user.get('email')
+    # identify не создаёт сессию, поэтому шлём его один раз — вместе с первым
+    # просмотром страницы, который сессию и открывает.
+    identify = False
+    if email and isinstance(body, dict) and body.get("name") == "page_visit":
+        if not request.session.get('analytics_identified'):
+            request.session['analytics_identified'] = True
+            identify = True
+
+    analytics.track_client_event(request, body, email=email, identify=identify)
+    return Response(status_code=202)
 
 
 @app.get("/api/accounts")
@@ -705,7 +766,7 @@ async def get_campaigns(account_ids: str, start_date: str, end_date: str, show_a
 
 
 @app.post("/api/report")
-async def generate_report(request: ReportRequest, user: dict[str, Any] = Depends(get_current_user)):
+async def generate_report(req: Request, request: ReportRequest, user: dict[str, Any] = Depends(get_current_user)):
     """Generate report with filters"""
     # Validate date range (max 3 months)
     validate_date_range(request.start_date, request.end_date, max_months=3)
@@ -866,6 +927,15 @@ async def generate_report(request: ReportRequest, user: dict[str, Any] = Depends
         "installs": int(sum(item['installs'] for item in result_list))
     }
     
+    analytics.track(req, "business_action_success", url=REPORTS_URL, data={
+        "action": "report_generate",
+        "accounts": len(request.account_ids),
+        "campaigns": len(request.campaign_ids),
+        "adgroup_type": request.adgroup_type,
+        "days": analytics.days_between(request.start_date, request.end_date),
+        "rows": len(result_list),
+    }, email=(user or {}).get('email'))
+
     return {
         "data": result_list,
         "totals": totals,
@@ -1110,6 +1180,14 @@ async def dashboard(req: Request, body: DashboardRequest, user: dict[str, Any] =
     total_ms = int((time.time() - start_time) * 1000)
     print(f"[dashboard] completed in {total_ms}ms (google: {timing['google_ms']}ms, adjust: {timing['applovin_ms']}ms)")
 
+    analytics.track(req, "business_action_success", url=DASHBOARD_URL, data={
+        "action": "dashboard_load",
+        "platform": body.platform,
+        "accounts": len(body.account_ids),
+        "days": analytics.days_between(body.start_date, body.end_date),
+        "total_ms": total_ms,
+    }, email=(user or {}).get('email'))
+
     return {
         "google": google_chart,
         "applovin": applovin_chart,
@@ -1338,7 +1416,7 @@ async def get_all_campaigns(account_ids: str, show_all: bool = False, user: dict
 
 
 @app.post("/api/upload")
-async def create_test_adgroup(request: UploadRequest, user: dict[str, Any] = Depends(get_current_user)):
+async def create_test_adgroup(req: Request, request: UploadRequest, user: dict[str, Any] = Depends(get_current_user)):
     """Create test ad groups with YouTube videos in selected campaigns"""
     client = get_client()
     
@@ -1394,6 +1472,15 @@ async def create_test_adgroup(request: UploadRequest, user: dict[str, Any] = Dep
                     "error": str(e)
                 })
     
+    created = sum(1 for r in results if r.get("success"))
+    analytics.track(req, "business_action_success", url=UPLOAD_URL, data={
+        "action": "test_adgroup_create",
+        "campaigns": len(request.campaign_ids),
+        "videos": len(video_ids),
+        "created": created,
+        "failed": len(results) - created,
+    }, email=(user or {}).get('email'))
+
     return {"results": results}
 
 
@@ -1552,6 +1639,7 @@ class ReplaceCreativesRequest(BaseModel):
     ad_resource_name: str  # customers/{cid}/ads/{adId} of the App Ad to update
     remove_asset_resources: List[str] = []  # YouTube video asset resource names to drop
     add_youtube_urls: List[str] = []  # New YouTube URLs/IDs to add
+    surface: Optional[str] = None  # вкладка-источник, только для аналитики
 
 
 @app.get("/api/adgroups")
@@ -1729,7 +1817,7 @@ async def get_adgroup_creatives(account_id: str, ad_group_id: str, start_date: O
 
 
 @app.post("/api/replace_creatives")
-async def replace_creatives(request: ReplaceCreativesRequest, user: dict[str, Any] = Depends(get_current_user)):
+async def replace_creatives(req: Request, request: ReplaceCreativesRequest, user: dict[str, Any] = Depends(get_current_user)):
     """Remove selected YouTube videos from an existing App Ad and/or add new ones.
 
     App Ads are mutable only through AdService (not AdGroupAdService). The
@@ -1833,11 +1921,20 @@ async def replace_creatives(request: ReplaceCreativesRequest, user: dict[str, An
         logs.append(error_msg)
         return {"success": False, "error": error_msg, "logs": logs, "skipped": skipped}
 
+    added_count = len([r for r in final if r in added_set])
+    analytics.track(req, "business_action_success", url=tab_url(request.surface, EDIT_URL), data={
+        "action": "creatives_replace",
+        "surface": request.surface or "editgroup",
+        "removed": removed_count,
+        "added": added_count,
+        "skipped": len(skipped),
+    }, email=(user or {}).get('email'))
+
     return {
         "success": True,
         "ad_resource_name": request.ad_resource_name,
         "removed": removed_count,
-        "added": len([r for r in final if r in added_set]),
+        "added": added_count,
         "total_after": len(final),
         "skipped": skipped,
         "logs": logs,
@@ -1853,6 +1950,7 @@ class CloneAdgroupRequest(BaseModel):
     youtube_urls: List[str]
     headlines: List[str]
     descriptions: List[str]
+    surface: Optional[str] = None  # вкладка-источник, только для аналитики
 
 
 @app.get("/api/adgroup_texts")
@@ -1893,7 +1991,7 @@ async def get_adgroup_texts(account_id: str, ad_group_id: str, user: dict[str, A
 
 
 @app.post("/api/clone_adgroup")
-async def clone_adgroup(request: CloneAdgroupRequest, user: dict[str, Any] = Depends(get_current_user)):
+async def clone_adgroup(req: Request, request: CloneAdgroupRequest, user: dict[str, Any] = Depends(get_current_user)):
     """Create one PAUSED ad group with the given videos and copied texts.
 
     The caller sends one chunk at a time (e.g. 20 videos per ad group), so a
@@ -1915,7 +2013,7 @@ async def clone_adgroup(request: CloneAdgroupRequest, user: dict[str, Any] = Dep
         raise HTTPException(status_code=400, detail="Source ad group has no headlines/descriptions to copy")
 
     try:
-        return create_adgroup_with_videos(
+        result = create_adgroup_with_videos(
             client=client,
             customer_id=request.account_id,
             campaign_id=request.campaign_id,
@@ -1924,6 +2022,13 @@ async def clone_adgroup(request: CloneAdgroupRequest, user: dict[str, Any] = Dep
             headlines=headlines,
             descriptions=descriptions,
         )
+        if result.get("success"):
+            analytics.track(req, "business_action_success", url=tab_url(request.surface, BULK_URL), data={
+                "action": "adgroup_clone",
+                "surface": request.surface or "bulk",
+                "videos": len(video_ids),
+            }, email=(user or {}).get('email'))
+        return result
     except Exception as e:
         return {
             "account_id": request.account_id,
