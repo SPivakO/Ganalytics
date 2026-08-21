@@ -63,6 +63,14 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      - name: Prune old package versions
+        if: github.ref == 'refs/heads/main'
+        uses: actions/delete-package-versions@v5
+        with:
+          package-name: ${{ env.IMAGE_NAME }}
+          package-type: container
+          min-versions-to-keep: 3
+
   deploy:
     runs-on: ubuntu-latest
     needs: build
@@ -136,6 +144,10 @@ jobs:
             docker compose up -d
 
             # Cleanup old images (keep last 3)
-            docker images ${IMAGE_NAME} --format "{{.ID}}" | tail -n +4 | xargs -r docker rmi -f || true
+            docker image ls "${REGISTRY}/${REPO_OWNER_LOWER}/${IMAGE_NAME}" --format "{{.Repository}}:{{.Tag}}" \
+              | grep -v ":<none>$" \
+              | grep -v ":${IMAGE_TAG}$" \
+              | tail -n +3 \
+              | xargs -r docker rmi || true
 
             echo "✅ Deployment complete! App should be available on port 8080."
