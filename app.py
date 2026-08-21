@@ -2,7 +2,7 @@ import os
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request, Depends, Response
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, RedirectResponse, JSONResponse
+from fastapi.responses import FileResponse, RedirectResponse, JSONResponse, PlainTextResponse
 from starlette.middleware.sessions import SessionMiddleware
 from authlib.integrations.starlette_client import OAuth
 from pydantic import BaseModel
@@ -594,13 +594,26 @@ async def health():
     return result
 
 
+ROBOTS_TXT = """User-agent: *
+Disallow: /
+"""
+
+NOINDEX_HEADERS = {"X-Robots-Tag": "noindex, nofollow, noarchive, nosnippet, noimageindex"}
+
+
+@app.get("/robots.txt", include_in_schema=False)
+async def robots_txt():
+    # Внутренний инструмент: полный запрет обхода и индексации
+    return PlainTextResponse(ROBOTS_TXT, headers=NOINDEX_HEADERS)
+
+
 @app.get("/")
 async def root(request: Request):
     user = request.session.get('user')
     if not user:
         return RedirectResponse(url='/api/auth/login')
     # Always revalidate the shell so versioned ?v= asset URLs take effect after a deploy
-    return FileResponse("static/index.html", headers={"Cache-Control": "no-cache"})
+    return FileResponse("static/index.html", headers={"Cache-Control": "no-cache", **NOINDEX_HEADERS})
 
 
 @app.get("/api/auth/login")
