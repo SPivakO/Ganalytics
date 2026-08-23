@@ -1,0 +1,119 @@
+name: Google Ads Read-Only Report
+
+on:
+  workflow_dispatch:
+    inputs:
+      report_type:
+        description: "Report to generate"
+        required: true
+        type: choice
+        default: campaign_performance
+        options:
+          - accounts
+          - campaign_inventory
+          - campaign_performance
+          - creative_performance
+      customer_id:
+        description: "Google Ads customer ID; not required for accounts"
+        required: false
+        type: string
+      start_date:
+        description: "YYYY-MM-DD; required for performance reports"
+        required: false
+        type: string
+      end_date:
+        description: "YYYY-MM-DD; required for performance reports"
+        required: false
+        type: string
+      grain:
+        description: "Campaign performance grain"
+        required: true
+        type: choice
+        default: total
+        options:
+          - total
+          - day
+      campaign_ids:
+        description: "Optional comma-separated campaign IDs"
+        required: false
+        type: string
+      campaign_name_contains:
+        description: "Optional exact substring filter"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: "google-ads-report-${{ github.actor }}"
+  cancel-in-progress: false
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      ADS_DEVELOPER_TOKEN: ${{ secrets.ADS_DEVELOPER_TOKEN }}
+      ADS_CLIENT_ID: ${{ secrets.ADS_CLIENT_ID }}
+      ADS_CLIENT_SECRET: ${{ secrets.ADS_CLIENT_SECRET }}
+      ADS_REFRESH_TOKEN: ${{ secrets.ADS_REFRESH_TOKEN }}
+      ADS_LOGIN_CUSTOMER_ID: ${{ secrets.ADS_LOGIN_CUSTOMER_ID }}
+      ADS_USE_PROTO_PLUS: ${{ secrets.ADS_USE_PROTO_PLUS }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install official Google Ads client
+        run: python -m pip install "google-ads==31.2.0"
+
+      - name: Generate sanitized report
+        shell: bash
+        env:
+          INPUT_REPORT_TYPE: ${{ inputs.report_type }}
+          INPUT_CUSTOMER_ID: ${{ inputs.customer_id }}
+          INPUT_START_DATE: ${{ inputs.start_date }}
+          INPUT_END_DATE: ${{ inputs.end_date }}
+          INPUT_GRAIN: ${{ inputs.grain }}
+          INPUT_CAMPAIGN_IDS: ${{ inputs.campaign_ids }}
+          INPUT_CAMPAIGN_NAME_CONTAINS: ${{ inputs.campaign_name_contains }}
+        run: |
+          set -euo pipefail
+          mkdir -p reports
+          args=(
+            --report-type "$INPUT_REPORT_TYPE"
+            --grain "$INPUT_GRAIN"
+            --output reports/google_ads_report.json
+          )
+          if [[ -n "$INPUT_CUSTOMER_ID" ]]; then
+            args+=(--customer-id "$INPUT_CUSTOMER_ID")
+          fi
+          if [[ -n "$INPUT_START_DATE" ]]; then
+            args+=(--start-date "$INPUT_START_DATE")
+          fi
+          if [[ -n "$INPUT_END_DATE" ]]; then
+            args+=(--end-date "$INPUT_END_DATE")
+          fi
+          if [[ -n "$INPUT_CAMPAIGN_IDS" ]]; then
+            args+=(--campaign-ids "$INPUT_CAMPAIGN_IDS")
+          fi
+          if [[ -n "$INPUT_CAMPAIGN_NAME_CONTAINS" ]]; then
+            args+=(--campaign-name-contains "$INPUT_CAMPAIGN_NAME_CONTAINS")
+          fi
+          python scripts/google_ads_report.py "${args[@]}"
+
+      - name: Upload sanitized JSON artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: "google-ads-${{ inputs.report_type }}-${{ github.run_id }}"
+          path: reports/google_ads_report.json
+          if-no-files-found: error
+          retention-days: 7
